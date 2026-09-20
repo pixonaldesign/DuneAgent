@@ -1,5 +1,11 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin } from 'vite'
+
+const phosphorCsr = fileURLToPath(
+  new URL('./node_modules/@phosphor-icons/react/dist/csr', import.meta.url),
+)
 
 const CLOCK_WARN_RE =
   /warn\(\s*(['"`])Clock: This module has been deprecated\. Please use THREE\.Timer instead\.\1\s*\);?\s*(\/\/[^\n]*)?/g
@@ -95,6 +101,14 @@ function threeTimerClock(): Plugin {
 export default defineConfig({
   base: process.env.VITE_BASE || '/',
   plugins: [threeTimerClock(), react()],
+  resolve: {
+    alias: [
+      {
+        find: /^@phosphor-icons\/react\/([A-Z][\w]*)$/,
+        replacement: path.join(phosphorCsr, '$1.es.js'),
+      },
+    ],
+  },
   optimizeDeps: {
     include: [
       'mapbox-gl',
@@ -110,7 +124,9 @@ export default defineConfig({
       '@phosphor-icons/react/CurrencyCircleDollar',
       '@phosphor-icons/react/Lightbulb',
       '@phosphor-icons/react/MapPin',
+      '@phosphor-icons/react/MapTrifold',
       '@phosphor-icons/react/RoadHorizon',
+      '@phosphor-icons/react/SidebarSimple',
       '@phosphor-icons/react/TrafficSign',
       '@phosphor-icons/react/Train',
       '@phosphor-icons/react/Truck',

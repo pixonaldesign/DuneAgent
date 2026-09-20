@@ -45,7 +45,7 @@
   --space-icons: 8px;
   --space-header-gap: 10px;
   --space-list: 8px;
-  --map-title-margin: 4px 12px 0;
+  --map-title-margin: 0 12px;
   --space-begin: 12px;
   --begin-size: var(--type-lead);
   --begin-arrow-w: 22px;
@@ -91,7 +91,7 @@ html[data-ui-mode='showcase'] {
   --space-icons: 12px;
   --space-header-gap: 14px;
   --space-list: 14px;
-  --map-title-margin: 8px 20px 0;
+  --map-title-margin: 0 20px;
   --space-begin: 20px;
   --begin-size: clamp(20px, 1.67vw, 32px);
   --begin-arrow-w: 35px;
@@ -203,6 +203,7 @@ body {
   left: var(--split-content);
   right: 0;
   z-index: 5;
+  min-height: 32px;
   pointer-events: none;
   overflow: visible;
 }
@@ -502,9 +503,8 @@ body {
   font-weight: 400;
   font-style: normal;
   letter-spacing: var(--tracking-title);
-  line-height: 1.4;
+  line-height: 1;
   overflow: visible;
-  text-box-trim: none;
 }
 
 .chat-title {
@@ -535,7 +535,8 @@ body {
   width: fit-content;
   max-width: calc(100% - 40px);
   margin: var(--map-title-margin);
-  padding: 0.28em 0.12em 0.16em 0;
+  /* First-line cap sits in the 32px header so its baseline matches .chat-title */
+  padding: calc((32px - 1em) / 2) 0.12em 0;
   color: var(--white);
   pointer-events: none;
 }

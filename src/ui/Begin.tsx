@@ -1,6 +1,7 @@
 import { motion } from 'motion/react'
 import { ArrowRight } from '@phosphor-icons/react/ArrowRight'
 import { asset } from '../asset'
+import { blur } from './motionBlur'
 
 type Props = {
   onBegin: () => void
@@ -17,7 +18,7 @@ export function Begin({ onBegin, onTechnical }: Props) {
       className="landing"
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -20, filter: 'blur(12px)' }}
+      exit={{ opacity: 0, y: -20, ...blur(12) }}
       transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
     >
       <img

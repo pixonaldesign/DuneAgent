@@ -8,6 +8,7 @@ import {
   streamDoneAt,
   wordDelay,
 } from './agentCadence'
+import { blur } from './motionBlur'
 
 type Props = {
   text: string
@@ -37,8 +38,8 @@ export function AgentText({ text, className, onComplete, immediate = false }: Pr
         <motion.span
           key={`${word}-${i}`}
           className="word"
-          initial={{ opacity: 0, filter: `blur(${WORD_BLUR}px)` }}
-          animate={{ opacity: 1, filter: 'blur(0px)' }}
+          initial={{ opacity: 0, ...blur(WORD_BLUR) }}
+          animate={{ opacity: 1, ...blur(0) }}
           transition={{
             delay: immediate ? i * WORD_STAGGER : wordDelay(i),
             duration: WORD_DURATION,

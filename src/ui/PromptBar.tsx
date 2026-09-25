@@ -3,6 +3,7 @@ import { motion } from 'motion/react'
 import { matchScenario, scenarios, type ScenarioId } from '../data/scenarios'
 import { getVoice, startVoice, stopVoice, subscribeVoice } from '../voice'
 import { asset } from '../asset'
+import { blur } from './motionBlur'
 
 const TRANSCRIPT = scenarios[0].questions[0]
 const WORDS = TRANSCRIPT.split(/\s+/).filter(Boolean)
@@ -145,8 +146,8 @@ export function PromptBar({ onSubmit, shifted = false }: Props) {
               <motion.span
                 key={`${word}-${i}`}
                 className="word"
-                initial={{ opacity: 0, filter: 'blur(8px)', y: 5 }}
-                animate={{ opacity: 1, filter: 'blur(0px)', y: 0 }}
+                initial={{ opacity: 0, ...blur(8), y: 5 }}
+                animate={{ opacity: 1, ...blur(0), y: 0 }}
                 transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
               >
                 {word}

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
-import { paintDynamicSky } from './skyPaint'
+import { SkyRenderer } from './skyGL'
+import { computeSky, drawSky2D } from './skyPaint'
 
 export function SkyBackdrop() {
   const ref = useRef<HTMLCanvasElement>(null)
@@ -7,8 +8,10 @@ export function SkyBackdrop() {
   useEffect(() => {
     const canvas = ref.current
     if (!canvas) return
-    const ctx = canvas.getContext('2d', { alpha: false })
-    if (!ctx) return
+    const gl = canvas.getContext('webgl', { alpha: false, antialias: false, depth: false, stencil: false })
+    const sky = gl ? SkyRenderer.create(gl) : null
+    const ctx = sky ? null : canvas.getContext('2d', { alpha: false })
+    if (!sky && !ctx) return
 
     let raf = 0
     let running = true
@@ -26,7 +29,9 @@ export function SkyBackdrop() {
     const frame = (now: number) => {
       if (!running) return
       resize()
-      paintDynamicSky(ctx, canvas.width, canvas.height, now / 1000)
+      const next = computeSky(canvas.width, canvas.height, now / 1000)
+      if (sky) sky.render(next, canvas.width, canvas.height)
+      else if (ctx) drawSky2D(ctx, next)
       raf = requestAnimationFrame(frame)
     }
 
@@ -37,6 +42,7 @@ export function SkyBackdrop() {
       running = false
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', resize)
+      sky?.dispose()
     }
   }, [])
 

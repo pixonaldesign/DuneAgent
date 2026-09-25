@@ -8,6 +8,7 @@ import { iconForTakeaway } from './takeawayIcon'
 import { ThinkingMark } from './ThinkingMark'
 import { AgentText } from './AgentText'
 import { THINK_DELAY, THINK_FADE, WORD_BLUR, WORD_DURATION, WORD_EASE, streamDoneAt, wordDelay } from './agentCadence'
+import { blur } from './motionBlur'
 
 export type PlanTurn = {
   key: number
@@ -69,9 +70,9 @@ function ThinkingCopy() {
       <motion.span
         key={THINK_PHRASES[index]}
         className="thinking-copy"
-        initial={{ opacity: 0, filter: 'blur(6px)' }}
-        animate={{ opacity: 1, filter: 'blur(0px)' }}
-        exit={{ opacity: 0, filter: 'blur(6px)' }}
+        initial={{ opacity: 0, ...blur(6) }}
+        animate={{ opacity: 1, ...blur(0) }}
+        exit={{ opacity: 0, ...blur(6) }}
         transition={{ duration: 0.38, ease: [0.22, 1, 0.36, 1] }}
       >
         {THINK_PHRASES[index]}
@@ -162,9 +163,9 @@ export function AgentReply({
           <motion.div
             key="thinking"
             className="thinking-slot"
-            initial={{ opacity: 0, filter: 'blur(8px)' }}
-            animate={{ opacity: 1, filter: 'blur(0px)' }}
-            exit={{ opacity: 0, filter: 'blur(10px)' }}
+            initial={{ opacity: 0, ...blur(8) }}
+            animate={{ opacity: 1, ...blur(0) }}
+            exit={{ opacity: 0, ...blur(10) }}
             transition={{ duration: THINK_FADE, ease: [0.22, 1, 0.36, 1] }}
             aria-label="Thinking"
           >
@@ -178,8 +179,8 @@ export function AgentReply({
           <motion.span
             key={`${word}-${i}`}
             className="word"
-            initial={{ opacity: 0, filter: `blur(${WORD_BLUR}px)` }}
-            animate={{ opacity: 1, filter: 'blur(0px)' }}
+            initial={{ opacity: 0, ...blur(WORD_BLUR) }}
+            animate={{ opacity: 1, ...blur(0) }}
             transition={{
               delay: wordDelay(i),
               duration: WORD_DURATION,
@@ -194,8 +195,8 @@ export function AgentReply({
         <div className="analysis-takeaways impact-plans">
           <motion.h3
             className="analysis-kicker"
-            initial={{ opacity: 0, filter: 'blur(8px)' }}
-            animate={{ opacity: 1, filter: 'blur(0px)' }}
+            initial={{ opacity: 0, ...blur(8) }}
+            animate={{ opacity: 1, ...blur(0) }}
             transition={{ delay: kickerDelay(words.length), duration: BULLET_DURATION }}
           >
             Impact plans
@@ -206,8 +207,8 @@ export function AgentReply({
                 <Fragment key={plan.id}>
                   {i > 0 ? <div className="scenario-q-rule" aria-hidden /> : null}
                   <motion.div
-                    initial={{ opacity: 0, filter: 'blur(8px)' }}
-                    animate={{ opacity: 1, filter: 'blur(0px)' }}
+                    initial={{ opacity: 0, ...blur(8) }}
+                    animate={{ opacity: 1, ...blur(0) }}
                     transition={{ delay: bulletDelay(words.length, i), duration: BULLET_DURATION }}
                   >
                     <button
@@ -244,8 +245,8 @@ export function AgentReply({
         <div className="analysis-takeaways">
           <motion.h3
             className="analysis-kicker"
-            initial={{ opacity: 0, filter: 'blur(8px)' }}
-            animate={{ opacity: 1, filter: 'blur(0px)' }}
+            initial={{ opacity: 0, ...blur(8) }}
+            animate={{ opacity: 1, ...blur(0) }}
             transition={{ delay: kickerDelay(words.length), duration: BULLET_DURATION }}
           >
             Key takeaways
@@ -256,8 +257,8 @@ export function AgentReply({
               return (
                 <motion.li
                   key={line}
-                  initial={{ opacity: 0, filter: 'blur(8px)' }}
-                  animate={{ opacity: 1, filter: 'blur(0px)' }}
+                  initial={{ opacity: 0, ...blur(8) }}
+                  animate={{ opacity: 1, ...blur(0) }}
                   transition={{ delay: bulletDelay(words.length, i), duration: BULLET_DURATION }}
                 >
                   <Icon className="analysis-icon" size={20} weight="regular" aria-hidden />

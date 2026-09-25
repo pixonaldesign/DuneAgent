@@ -1253,6 +1253,13 @@ html[data-ui-mode='showcase'] .thinking-copy {
   will-change: filter, opacity;
 }
 
+/* Gecko: one compositor layer per word stalls long replies; words don't blur there anyway. */
+@supports (-moz-appearance: none) {
+  .word {
+    will-change: auto;
+  }
+}
+
 .analysis-takeaways {
   margin-top: 22px;
 }

@@ -2,6 +2,8 @@ import { useLayoutEffect } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { PerspectiveCamera } from '@react-three/drei'
 import * as THREE from 'three'
+import { IS_GECKO } from '../browser'
+import { DuneCapture } from './DuneCapture'
 import { resetCycle } from './dayNight'
 import { CameraRig } from './CameraRig'
 import { CycleLights } from './CycleLights'
@@ -34,6 +36,7 @@ export function DuneCanvas({ flying, fading = false }: Props) {
       <CycleLights lifted={flying || fading} />
       <DuneTerrain />
       <SandParticles key="sand-visible" />
+      {IS_GECKO ? <DuneCapture /> : null}
     </Canvas>
   )
 }

@@ -221,12 +221,42 @@ function mixHex(a: string, b: string, t: number): string {
   return `#${((1 << 24) | (r << 16) | (g << 8) | bl).toString(16).slice(1)}`
 }
 
-export function paintDynamicSky(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  h: number,
-  time = performance.now() / 1000,
-) {
+export const SKY_BAND_STOPS = [0, 0.12, 0.3, 0.52, 0.7, 0.86, 1] as const
+/** Rotation of the Milky-Way veil, radians (canvas convention, y down). */
+export const SKY_VEIL_ANGLE = -0.36
+
+type Circle = { x: number; y: number; r: number }
+
+export type SkyStar = { x: number; y: number; r: number; a: number; glint: boolean }
+
+/** Everything needed to draw one sky frame, in the pixel space of a `w`×`h` target. */
+export type SkyFrame = {
+  w: number
+  h: number
+  extra: number
+  band: string[]
+  glow: string
+  sunColor: string
+  sunIntensity: number
+  bloom: Circle
+  disc: Circle
+  cloudAmt: number
+  clouds: Circle[]
+  veilAlpha: number
+  veilOrigin: { x: number; y: number }
+  starRgb: [number, number, number]
+  stars: SkyStar[]
+}
+
+let latest: SkyFrame | null = null
+
+/** Last frame computed by the visible sky, so other layers can redraw it without re-ticking voice state. */
+export function latestSky() {
+  return latest
+}
+
+/** Advances sky state (voice, freeze clock) — call once per displayed frame. */
+export function computeSky(w: number, h: number, time = performance.now() / 1000): SkyFrame {
   const palette = samplePalette(getPhase())
   const sun = sunDirection(palette)
   const breathe = 0.5 + 0.5 * Math.sin(time * 0.16)
@@ -238,66 +268,40 @@ export function paintDynamicSky(
   const lift = getSkyTravel()
   const extra = lift * h * FLY_SKY_LIFT
 
-  ctx.setTransform(1, 0, 0, 1, 0, 0)
-  const band = ctx.createLinearGradient(0, 0, 0, h + extra)
-  band.addColorStop(0, zenith)
-  band.addColorStop(0.12, mixHex(zenith, horizon, 0.16))
-  band.addColorStop(0.3, mixHex(zenith, horizon, 0.38 + breathe * 0.04))
-  band.addColorStop(0.52, mixHex(zenith, horizon, 0.72))
-  band.addColorStop(0.7, mixHex(horizon, glow, 0.22))
-  band.addColorStop(0.86, mixHex(horizon, glow, 0.62))
-  band.addColorStop(1, glow)
-  ctx.fillStyle = band
-  ctx.fillRect(0, 0, w, h)
-
-  const hx = w * (0.5 + sun[0] * 0.1)
-  const horizonBloom = ctx.createRadialGradient(hx, h * 1.08 + extra, 0, hx, h * 1.08 + extra, Math.max(w, h) * 0.78)
-  horizonBloom.addColorStop(0, rgba(glow, 0.28))
-  horizonBloom.addColorStop(0.45, rgba(glow, 0.08))
-  horizonBloom.addColorStop(1, rgba(glow, 0))
-  ctx.fillStyle = horizonBloom
-  ctx.fillRect(0, 0, w, h)
-
-  const sunX = w * (0.5 + sun[0] * 0.34)
-  const sunY = h * (1 - (0.08 + Math.max(0, sun[1]) * 0.56)) + extra
-  const sunR = Math.max(w, h) * (0.2 + palette.sunIntensity * 0.07)
-  const disc = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR)
-  disc.addColorStop(0, rgba(palette.sunColor, Math.min(0.9, 0.22 + palette.sunIntensity * 0.2)))
-  disc.addColorStop(0.1, rgba(palette.sunColor, 0.28 * palette.sunIntensity))
-  disc.addColorStop(0.36, rgba(glow, 0.12 * palette.sunIntensity))
-  disc.addColorStop(1, rgba(palette.sunColor, 0))
-  ctx.fillStyle = disc
-  ctx.fillRect(0, 0, w, h)
-
-  const cloudAmt = (1 - palette.starOpacity) * 0.09
-  if (cloudAmt > 0.02) {
-    ctx.save()
-    for (let i = 0; i < 2; i++) {
-      const cx = w * (0.28 + i * 0.4 + Math.sin(time * 0.025 + i * 2.1) * 0.05)
-      const cy = h * (0.58 + i * 0.08 + Math.sin(time * 0.03 + i) * 0.03) + extra
-      const cw = w * 0.38
-      const cloud = ctx.createRadialGradient(cx, cy, 0, cx, cy, cw)
-      cloud.addColorStop(0, rgba(glow, cloudAmt))
-      cloud.addColorStop(1, rgba(glow, 0))
-      ctx.fillStyle = cloud
-      ctx.fillRect(cx - cw, cy - cw * 0.35, cw * 2, cw * 0.7)
-    }
-    ctx.restore()
+  const frame: SkyFrame = {
+    w,
+    h,
+    extra,
+    band: [
+      zenith,
+      mixHex(zenith, horizon, 0.16),
+      mixHex(zenith, horizon, 0.38 + breathe * 0.04),
+      mixHex(zenith, horizon, 0.72),
+      mixHex(horizon, glow, 0.22),
+      mixHex(horizon, glow, 0.62),
+      glow,
+    ],
+    glow,
+    sunColor: palette.sunColor,
+    sunIntensity: palette.sunIntensity,
+    bloom: { x: w * (0.5 + sun[0] * 0.1), y: h * 1.08 + extra, r: Math.max(w, h) * 0.78 },
+    disc: {
+      x: w * (0.5 + sun[0] * 0.34),
+      y: h * (1 - (0.08 + Math.max(0, sun[1]) * 0.56)) + extra,
+      r: Math.max(w, h) * (0.2 + palette.sunIntensity * 0.07),
+    },
+    cloudAmt: (1 - palette.starOpacity) * 0.09,
+    clouds: [0, 1].map((i) => ({
+      x: w * (0.28 + i * 0.4 + Math.sin(time * 0.025 + i * 2.1) * 0.05),
+      y: h * (0.58 + i * 0.08 + Math.sin(time * 0.03 + i) * 0.03) + extra,
+      r: w * 0.38,
+    })),
+    veilAlpha: palette.starOpacity > 0.05 ? palette.starOpacity * 0.1 : 0,
+    veilOrigin: { x: w * 0.5, y: h * 0.2 + extra },
+    starRgb: hexRgb(mixHex('#e8f0f8', palette.sunColor, 0.18)),
+    stars: [],
   }
-
-  if (palette.starOpacity > 0.05) {
-    ctx.save()
-    ctx.translate(w * 0.5, h * 0.2 + extra)
-    ctx.rotate(-0.36)
-    ctx.globalAlpha = palette.starOpacity * 0.1
-    const veil = ctx.createLinearGradient(0, -h * 0.09, 0, h * 0.09)
-    veil.addColorStop(0, 'rgba(140, 170, 210, 0)')
-    veil.addColorStop(0.5, 'rgba(190, 214, 240, 0.22)')
-    veil.addColorStop(1, 'rgba(140, 170, 210, 0)')
-    ctx.fillStyle = veil
-    ctx.fillRect(-w, -h * 0.09, w * 2, h * 0.18)
-    ctx.restore()
-  }
+  const stars = frame.stars
 
   tickVoice()
   const voice = getVoice()
@@ -308,10 +312,7 @@ export function paintDynamicSky(
   const blend = voiceBlend()
   const amp = voiceAmp()
 
-  const [sr, sg, sb] = hexRgb(mixHex('#e8f0f8', palette.sunColor, 0.18))
   const drift = (clock * 0.0028) % 1
-  ctx.save()
-  ctx.globalCompositeOperation = 'lighter'
 
   if (frozenStars && blend > 0.001) {
     const center = h * 0.44
@@ -330,18 +331,13 @@ export function paintDynamicSky(
       const homeY = frozen.ny * h
       const u = lineXs[i] ?? frozen.nx
       const linedY = center + voiceLift(u, time) * amp * waveH
-      const x = mix(frozen.nx, u, blend) * w
-      drawStar(
-        ctx,
-        x,
-        mix(homeY, linedY, blend),
-        Math.max(0.85 * unit, star.r * unit),
+      stars.push({
+        x: mix(frozen.nx, u, blend) * w,
+        y: mix(homeY, linedY, blend),
+        r: Math.max(0.85 * unit, star.r * unit),
         a,
-        star.glint,
-        sr,
-        sg,
-        sb,
-      )
+        glint: star.glint,
+      })
     })
   } else {
     for (const star of STARS) {
@@ -355,8 +351,65 @@ export function paintDynamicSky(
       const fade = 1 - Math.min(1, Math.max(0, (ny - 0.68) / 0.14))
       const a = vis * fade * (star.glint ? 1.9 : 1.05)
       const r = Math.max(0.85 * unit, star.r * unit)
-      drawStar(ctx, x, y, r, a, star.glint, sr, sg, sb)
+      stars.push({ x, y, r, a, glint: star.glint })
     }
   }
+
+  latest = frame
+  return frame
+}
+
+export function drawSky2D(ctx: CanvasRenderingContext2D, f: SkyFrame) {
+  const { w, h, extra, glow } = f
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  const band = ctx.createLinearGradient(0, 0, 0, h + extra)
+  SKY_BAND_STOPS.forEach((stop, i) => band.addColorStop(stop, f.band[i] ?? glow))
+  ctx.fillStyle = band
+  ctx.fillRect(0, 0, w, h)
+
+  const { bloom, disc } = f
+  const horizonBloom = ctx.createRadialGradient(bloom.x, bloom.y, 0, bloom.x, bloom.y, bloom.r)
+  horizonBloom.addColorStop(0, rgba(glow, 0.28))
+  horizonBloom.addColorStop(0.45, rgba(glow, 0.08))
+  horizonBloom.addColorStop(1, rgba(glow, 0))
+  ctx.fillStyle = horizonBloom
+  ctx.fillRect(0, 0, w, h)
+
+  const sunGrad = ctx.createRadialGradient(disc.x, disc.y, 0, disc.x, disc.y, disc.r)
+  sunGrad.addColorStop(0, rgba(f.sunColor, Math.min(0.9, 0.22 + f.sunIntensity * 0.2)))
+  sunGrad.addColorStop(0.1, rgba(f.sunColor, 0.28 * f.sunIntensity))
+  sunGrad.addColorStop(0.36, rgba(glow, 0.12 * f.sunIntensity))
+  sunGrad.addColorStop(1, rgba(f.sunColor, 0))
+  ctx.fillStyle = sunGrad
+  ctx.fillRect(0, 0, w, h)
+
+  if (f.cloudAmt > 0.02) {
+    for (const c of f.clouds) {
+      const cloud = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.r)
+      cloud.addColorStop(0, rgba(glow, f.cloudAmt))
+      cloud.addColorStop(1, rgba(glow, 0))
+      ctx.fillStyle = cloud
+      ctx.fillRect(c.x - c.r, c.y - c.r * 0.35, c.r * 2, c.r * 0.7)
+    }
+  }
+
+  if (f.veilAlpha > 0) {
+    ctx.save()
+    ctx.translate(f.veilOrigin.x, f.veilOrigin.y)
+    ctx.rotate(SKY_VEIL_ANGLE)
+    ctx.globalAlpha = f.veilAlpha
+    const veil = ctx.createLinearGradient(0, -h * 0.09, 0, h * 0.09)
+    veil.addColorStop(0, 'rgba(140, 170, 210, 0)')
+    veil.addColorStop(0.5, 'rgba(190, 214, 240, 0.22)')
+    veil.addColorStop(1, 'rgba(140, 170, 210, 0)')
+    ctx.fillStyle = veil
+    ctx.fillRect(-w, -h * 0.09, w * 2, h * 0.18)
+    ctx.restore()
+  }
+
+  const [sr, sg, sb] = f.starRgb
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  for (const s of f.stars) drawStar(ctx, s.x, s.y, s.r, s.a, s.glint, sr, sg, sb)
   ctx.restore()
 }

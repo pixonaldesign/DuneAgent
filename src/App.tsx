@@ -11,10 +11,13 @@ import { AgentReply } from './ui/AgentReply'
 import { AgentText } from './ui/AgentText'
 import { LiquidGlassLayer } from './ui/GlassLayer'
 import { CommandMenu } from './ui/CommandMenu'
+import type { ImpactPlanId } from './data/impactPlans'
+import { impactPlanById } from './data/impactPlans'
 import { briefingSummary, scenarioById, titleForPrompt, type ScenarioId } from './data/scenarios'
 import { getVoice, subscribeVoice } from './voice'
 import { asset } from './asset'
 import { SidebarSimple } from '@phosphor-icons/react/SidebarSimple'
+import { ArrowsOut } from '@phosphor-icons/react/ArrowsOut'
 
 const MobilityMap = lazy(async () => {
   const mod = await import('./map/MobilityMap')
@@ -42,6 +45,11 @@ export default function App() {
   const [cardsReady, setCardsReady] = useState(false)
   const [mapReady, setMapReady] = useState(false)
   const [mapHidden, setMapHidden] = useState(false)
+  const [selectedPlanId, setSelectedPlanId] = useState<ImpactPlanId | null>(null)
+  const [planTurns, setPlanTurns] = useState<
+    { key: number; planId: ImpactPlanId; label: string; reply: string }[]
+  >([])
+  const planTurnKey = useRef(0)
   const [voicing, setVoicing] = useState(() => getVoice().mode !== 'idle')
   const flyTimer = useRef(0)
   const hello = greeting()
@@ -97,6 +105,8 @@ export default function App() {
       setReplyId(null)
       setChatTitle(null)
       setAsked(null)
+      setSelectedPlanId(null)
+      setPlanTurns([])
       setMapHidden(false)
       setPhase('briefing')
     } else if (phase === 'briefing') {
@@ -110,8 +120,32 @@ export default function App() {
     setReplyId(id)
     setChatTitle(titleForPrompt(id, text))
     setAsked(text ?? scenarioById(id).questions[0])
+    setSelectedPlanId(null)
+    setPlanTurns([])
     setMapHidden(false)
     setPhase('analysis')
+  }, [])
+
+  const onSelectPlan = useCallback((id: ImpactPlanId | null) => {
+    setSelectedPlanId(id)
+    if (!id) return
+    const plan = impactPlanById(id)
+    if (!plan) return
+    planTurnKey.current += 1
+    setPlanTurns((turns) => [
+      ...turns,
+      {
+        key: planTurnKey.current,
+        planId: id,
+        label: plan.label,
+        reply: plan.reply,
+      },
+    ])
+  }, [])
+
+  /** Clear map focus only — keep the plan chat thread intact. */
+  const resetMapView = useCallback(() => {
+    setSelectedPlanId(null)
   }, [])
 
   const goSplit = useCallback(() => {
@@ -179,6 +213,8 @@ export default function App() {
               layers={layers}
               variant="widget"
               focus={scenarioById(replyId).mapFocus}
+              selectedPlanId={replyId === 'landuse' ? selectedPlanId : null}
+              onSelectPlan={replyId === 'landuse' ? onSelectPlan : undefined}
               onReady={onMapReady}
             />
           </Suspense>
@@ -226,6 +262,28 @@ export default function App() {
           </div>
         ) : null}
 
+        {showMapPane && mapReady && replyId === 'landuse' ? (
+          <div className="map-reset-slot">
+            <AnimatePresence>
+              {selectedPlanId ? (
+                <motion.button
+                  key="reset-map"
+                  type="button"
+                  className="map-reset-btn glass liquid-glass"
+                  onClick={resetMapView}
+                  initial={{ opacity: 0, y: 28 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 18 }}
+                  transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  <ArrowsOut className="map-reset-icon" size={18} weight="regular" aria-hidden />
+                  Reset map view
+                </motion.button>
+              ) : null}
+            </AnimatePresence>
+          </div>
+        ) : null}
+
         <div className={voicing ? 'voice-dim is-off' : 'voice-dim'}>
           {phase === 'briefing' ? (
             <motion.div
@@ -248,7 +306,7 @@ export default function App() {
 
           {inReply && replyId ? (
             <div className={splitLayout ? 'analysis-stack is-split' : 'analysis-stack'}>
-              <div className="question-chip glass liquid-glass">
+              <div className="question-chip">
                 {asked ?? scenarioById(replyId).questions[0]}
               </div>
               <AgentReply
@@ -257,6 +315,8 @@ export default function App() {
                 onRevealed={goSplit}
                 onSeeMap={goTechnical}
                 technical={phase === 'technical'}
+                planTurns={planTurns}
+                onSelectPlan={onSelectPlan}
               />
             </div>
           ) : null}

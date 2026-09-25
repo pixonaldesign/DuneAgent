@@ -17,7 +17,7 @@ These are hard rules. Violating any of them is a regression, not an improvement.
 3. **Default UI mode is Showcase** (`html[data-ui-mode="showcase"]`). Desktop is a compact variant toggled via **⌘K / Ctrl+K**, persisted as `localStorage['dune-ui-mode']`. Do not delete either mode. Do not make desktop the default.
 4. **Liquid glass is the material.** Elements marked `.liquid-glass` are refracted panes (Kawase frost + SDF lens in `GlassLayer.tsx`) plus a **subtle CSS rim**: 1px `--glass-stroke` (`rgba(255, 255, 255, 0.22)`) and `inset 0 1px 0 rgba(255, 255, 255, 0.28)` catch light. Do **not** replace them with `box-shadow: 0 8px 32px`, four-corner drop shadows, `filter: blur` on the card itself, or a flat `rgba` panel. Allowed CSS shadows on glass: that **inset highlight** and the **tucked bottom contact** (`0 12px 16px -14px`). Nothing else.
 5. **Landing is a centered cinematic stack:** DUNE logo → two-line serif title → **Executive / Full System** cards with Phosphor `ArrowRight`. Do not relabel them Agent / Technical. Do not turn this into a marketing nav, a left-aligned hero, or a single CTA.
-6. **Topic cards are Figma, not Bootstrap.** **Four** equal columns (Mass Transit, Roads, Toll Road & Pricing, **Land Use**). Padding `--space-card` (8px showcase / 12px desktop), **4:3** heroes (`--hero-aspect`), title overlaid on the photo, body `justify-content: space-between` so questions pin to the bottom, card `min-height: 590px` (≈570 + 20px gap between blurb and questions), 2-line blurb min-height, hover arrow + dim siblings, **20% white / `plus-lighter`** question rules. Type: title **40px showcase / 30px desktop**, blurb **24 / 18**, questions **16 / 14** (`--type-ui`). Hierarchy is **title > blurb > questions**. Do not invert it. Do not drop back to three cards.
+6. **Topic cards are Figma, not Bootstrap.** **Four** equal columns (Mass Transit, Policy and Demand Management, Roads, **Land Use**). Padding `--space-card` (8px showcase / 12px desktop), **4:3** heroes (`--hero-aspect`), title overlaid on the photo, body with a **~24px gap** between blurb and topics (content height — do not restore a tall `min-height` void), 2-line blurb min-height, hover arrow + dim siblings (**75ms hover-intent delay**; leave cancels immediately; `:focus-visible` stays immediate), **20% white / `plus-lighter`** question rules. Type: title **40px showcase / 30px desktop**, blurb **24 / 18**, questions **16 / 14** (`--type-ui`). Hierarchy is **title > blurb > questions**. Do not invert it. Do not drop back to three cards. Topic counts differ by card (2 / 2 / 1 / 1); row `align-items: stretch` keeps equal height to the tallest. Land Use’s single action is **Explore impact plans** — the nine impact plans live in the agent transcript and map, not on the card.
 7. **Greeting is always “Your Excellency”** — `Good Morning|Afternoon|Evening, Your Excellency`. Do not substitute a first name, “Welcome,” or a generic hello. **`briefingSummary` is two generic sentences** (stacked network / not new lanes). No visitor counts, ridership stats, or 2030/2040 figures in that line.
 8. **Agent copy streams on the fast cadence in `agentCadence.ts`.** Do not swap `AgentText` / `AgentReply` word-blur for instant text, a typewriter at 40ms, or a markdown renderer.
 9. **The map is a viewport split, not a rounded card.** Showcase **40vw content / 60vw map**. Desktop **33vw / 66vw**. `border-radius: 0`, `box-shadow: none`. It is **not** an inset widget with 16px radius.
@@ -40,7 +40,7 @@ If a design-system instinct conflicts with a token or a class in this repo, **th
 | **Agent replies** | Canned copy. `matchScenario()` is keyword routing (`land use` / `zoning` / `density` → `landuse`; `toll` / `disney` / `road` → id), then `scenarios[id].reply` + `.analysis`. Not an LLM, not streamed from a server. | `src/data/scenarios.ts` |
 | **Thinking copy** | Four rotating phrases on a 1.6s interval (`Reading the corridor…`, etc.). Cosmetic. | `AgentReply.tsx` `THINK_PHRASES` |
 | **Takeaway icons** | First-match regex on the bullet string (`tram` → Train, `toll` → CurrencyCircleDollar). Fallback `Lightbulb`. | `src/ui/takeawayIcon.ts` |
-| **Map data** | Styled Mapbox + **local GeoJSON** (Saadiyat / Yas). Heat, corridors, and POIs are authored in `saadiyat.ts` / `yas.ts`. Not live traffic, not a tile API beyond the basemap. Map is `interactive: false`. | `MobilityMap.tsx` |
+| **Map data** | Styled Mapbox + **local GeoJSON** (Saadiyat / Yas / emirate impact pins). Heat, corridors, and POIs are authored in `saadiyat.ts` / `yas.ts`; land-use callouts in `impactPlans.ts`. Interactive pan / zoom / rotate. | `MobilityMap.tsx` |
 | **Mapbox token** | `VITE_MAPBOX_TOKEN` **or** the public `pk.*` fallback already in source. Optional `VITE_MAPBOX_STYLE`. If both are empty, a “Add a Mapbox token…” placeholder shows. | `MobilityMap.tsx` `FALLBACK_MAPBOX_TOKEN` |
 | **Full System landing path** | Stub. `beginTechnical()` → `phase === 'techEntry'`. Same dunes as landing plus a back button (`.tech-entry-stub`). **No technical dashboard, no sidebar, no KPIs.** `html[data-entry="technical"]` is a flag only. | `App.tsx`, `Begin.tsx` |
 | **See evidence on map** | Mode switch only. Sets `phase` to `technical`, `html[data-evidence-mode="technical"]`, `.is-technical` on `.app`, and `.is-active` on the CTA. **No designed technical UI.** The split map is already visible. | `App.tsx` `goTechnical`, `AgentReply` `onSeeMap` |
@@ -148,11 +148,11 @@ Cards use `--entry-card-gap` (38px showcase / 16px desktop), radius 20/16, previ
 **Structure, top to bottom:**
 
 1. **Hero** — `aspect-ratio: 4 / 3` (`--hero-aspect`), 20px radius, photo `object-fit: cover`, cyan fade `linear-gradient(180deg, transparent 52.4%, rgba(59, 239, 255, 0.8))`, **number + title** (serif) sitting on the fade. `onLoad` may set the hero to the image’s natural ratio; CSS default must remain 4:3. Transit hero is the current `mass-transit.jpg` (replaced). Land Use is `land-use.jpg`.
-2. **Body** — 12px inner pad, `justify-content: space-between` (no row gap). Blurb stays top; questions pin to the bottom.
-3. **Blurb** — sans, **18px desktop / 24px showcase**, **`min-height: 2em * line-height`** so a one-line blurb does not collapse the card. Tolls currently reuses the transit blurb; do not “fix” height by deleting the min-height.
-4. **Questions** — three rows, pinned to the bottom of the body. Separators are `border-top: 1px solid rgba(255, 255, 255, 0.2)` + **`mix-blend-mode: plus-lighter`** (the 20% plus-lighter rule). Hover/focus: siblings `opacity: 0.32`, active row `opacity: 1`, Phosphor `ArrowRight` 16 slides in from the right.
+2. **Body** — 12px inner pad, **~24px gap** between blurb and questions (content-sized; do not stretch the body to fill leftover viewport height).
+3. **Blurb** — sans, **18px desktop / 24px showcase**, **`min-height: 2em * line-height`** so a one-line blurb does not collapse the card. Do not “fix” height by deleting the min-height.
+4. **Questions** — topic rows under the blurb (counts vary: Mass Transit 2, Policy and Demand Management 2, Roads 1, Land Use 1). Separators are `border-top: 1px solid rgba(255, 255, 255, 0.2)` + **`mix-blend-mode: plus-lighter`** (the 20% plus-lighter rule). Hover/focus: siblings `opacity: 0.32`, active row `opacity: 1`, Phosphor `ArrowRight` 16 slides in from the right — with a **75ms hover-intent delay** on enter (leave is immediate; `:focus-visible` is immediate). Land Use opens analysis with **Explore impact plans**; the nine impact plans are selected in the transcript list and map tooltips, not as card rows.
 
-Card chrome: `padding: var(--space-card)` (8 showcase / 12 desktop), `border-radius: 24px`, `gap: 8px`, `min-height: 590px` (≈570 used + 20 so space-between opens a gap), `.glass.liquid-glass`. Below 1100px, `min-height` resets to `0` when the row stacks.
+Card chrome: `padding: var(--space-card)` (8 showcase / 12 desktop), `border-radius: 24px`, `gap: 8px`, content height (no 590px floor), `.glass.liquid-glass`. The four cards stay equal via row stretch to the tallest.
 
 Do not put the title under the photo. Do not move questions above the blurb. Do not collapse to three cards.
 
@@ -206,7 +206,7 @@ Split geometry (CSS, not a React grid):
 
 Map title sits in `.map-chrome` over the map column (serif, `--chat-title-size`). Prompt bar recenters into the left column when `shifted` (`.prompt-bar.shifted`).
 
-`MobilityMap` variant used by the app is `"widget"`. Focus `saadiyat` | `yas` from the scenario. Overlay ids (heat / line / POI) come from `scenario.mapLayers`.
+`MobilityMap` variant used by the app is `"widget"`. Focus `saadiyat` | `yas` | `emirate` from the scenario. Overlay ids (heat / line / POI) come from `scenario.mapLayers`. Land Use uses `emirate` + impact callouts (dot + stem + dark chip) — no Saadiyat heat/shuttle layers on that view. A 1px hairline (`rgba(255,255,255,0.14)`) marks the split between chat and map (`pointer-events: none`).
 
 ### Dune colors
 
@@ -285,7 +285,7 @@ While not idle, `.app.is-voicing` dims the briefing/reply (`.voice-dim.is-off`) 
 
 On stop, `PromptBar` streams the canned line:
 
-> What will public transport ridership look like in 2040?
+> Demand-led 2040 metro network
 
 140ms/word, 180ms first-word delay, 380ms settle, then the textarea is editable. Submit runs `matchScenario`. Placeholder: `Tell me which topic you’d like to ask about` / `Listening…`.
 
@@ -295,20 +295,20 @@ Do not wire `webkitSpeechRecognition` in passing. If you add real STT, keep this
 
 ## Content
 
-`src/data/scenarios.ts` — four scenarios. Land Use (`landuse`) is a full mock like the others: three questions, canned reply, three takeaways, Saadiyat overlays.
+`src/data/scenarios.ts` — four scenarios. Land Use (`landuse`) opens with one card action (**Explore impact plans**); the nine impact plans are listed in the agent transcript and as map tooltips (`src/data/impactPlans.ts`, `MapFocus: 'emirate'`). Other cards keep canned reply + takeaways.
 
-| id | Title | Map |
-| --- | --- | --- |
-| `transit` | Mass Transit | Saadiyat cultural heat, shuttle, cycle spine |
-| `roads` | Roads | Yas Disney heat, tram, highway pressure |
-| `tolls` | Toll Road & Pricing | Same Yas overlays (pricing narrative) |
-| `landuse` | Land Use | Same Saadiyat overlays (plots / density / waterfront) |
+| id | Title | Topics | Map |
+| --- | --- | --- | --- |
+| `transit` | Mass Transit | 2 metro topics | Saadiyat cultural heat, shuttle, cycle spine |
+| `tolls` | Policy and Demand Management | 2 policy topics | Yas overlays (pricing narrative) |
+| `roads` | Roads | 1 ROI topic | Yas Disney heat, tram, highway pressure |
+| `landuse` | Land Use | Explore impact plans | Emirate overview + impact pins (no Saadiyat overlays) |
 
 Hero images: `public/images/mass-transit.jpg` (replaced), `roads.jpg`, `road-tolls.png`, `land-use.jpg`.
 
 `titleForPrompt` uses the scenario title for known questions; freeform text becomes a ≤42-character chat title.
 
-Keyword router (`matchScenario`): exact question match first; else land use / land-use / zoning / density / mixed-use / waterfront / plot → `landuse`; toll/pricing/salik → `tolls`; disney/yas/road/traffic/… → `roads`; else `transit`.
+Keyword router (`matchScenario`): exact question match first; else land-use / impact / masterplan / framework plan / place keywords → `landuse` **before** the yas/road branch; remote work / congestion in 2026 / toll → `tolls`; stmp / metro network → `transit`; disney/yas/road/roi/… → `roads`; else `transit`.
 
 ---
 
@@ -324,6 +324,7 @@ src/voice.ts               Mock voice state + constellation blends
 src/vite-env.d.ts          VITE_MAPBOX_* ; unused SpeechRecognition types
 
 src/data/scenarios.ts      Canned briefing, cards, replies, map layer ids
+src/data/impactPlans.ts    Land-use impact plan pins + emirate camera
 src/data/saadiyat.ts       Local GeoJSON + camera for Saadiyat
 src/data/yas.ts            Local GeoJSON + camera for Yas
 src/data/palettes.ts       DUSK / BLUE_HOUR / NIGHT
@@ -333,14 +334,14 @@ src/ui/Begin.tsx           Landing — Executive / Full System
 src/ui/KpiDeck.tsx         ScenarioCards (topic cards)
 src/ui/PromptBar.tsx       Glass prompt + mock mic transcript
 src/ui/AgentText.tsx       Word-blur stream
-src/ui/AgentReply.tsx      Think → reply → takeaways → evidence CTA
+src/ui/AgentReply.tsx      Think → reply → takeaways (or land-use plan list) → evidence CTA
 src/ui/agentCadence.ts     Shared stream timing
 src/ui/takeawayIcon.ts     Keyword → Phosphor icon
 src/ui/ThinkingMark.tsx    Chromatic Dune mark (WebGL, CSS fallback)
 src/ui/GlassLayer.tsx      Kawase + SDF liquid glass
 src/ui/CommandMenu.tsx     ⌘K Showcase / Desktop
 
-src/map/MobilityMap.tsx    Mapbox widget, local overlays, token fallback
+src/map/MobilityMap.tsx    Mapbox widget, local overlays, impact pins, token fallback
 
 src/scene/DuneCanvas.tsx   R3F canvas
 src/scene/CameraRig.tsx    Landing orbit + 2.8s fly

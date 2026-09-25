@@ -117,6 +117,7 @@ export default defineConfig({
       'postprocessing',
       '@phosphor-icons/react',
       '@phosphor-icons/react/ArrowRight',
+      '@phosphor-icons/react/ArrowsOut',
       '@phosphor-icons/react/Bicycle',
       '@phosphor-icons/react/Boat',
       '@phosphor-icons/react/Bus',

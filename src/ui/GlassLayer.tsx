@@ -78,6 +78,8 @@ uniform sampler2D iChannel1;
 uniform vec4 uPane[4];
 uniform float uRadius[4];
 uniform int uCount;
+uniform float uHeaderSolid;
+uniform float uHeaderFade;
 
 const float NUM_ZERO = 0.0;
 const float NUM_ONE = 1.0;
@@ -123,6 +125,15 @@ void main() {
   vec2 uv = fragCoord / iResolution.xy;
   vec4 fragColor = vec4(NUM_ZERO);
   float best = NUM_ZERO;
+  // Match .analysis-stack mask: dissolve glass under the chat header band.
+  float yFromTop = iResolution.y - fragCoord.y;
+  float headFade = uHeaderFade <= NUM_ZERO
+    ? NUM_ONE
+    : smoothstep(uHeaderSolid, uHeaderSolid + uHeaderFade, yFromTop);
+
+  if (headFade <= 0.001) {
+    discard;
+  }
 
   for (int i = 0; i < 4; i++) {
     if (i < uCount) {
@@ -136,7 +147,7 @@ void main() {
         float inset = max(min(halfSize.x, halfSize.y), NUM_ONE);
         float nd = clamp(-sd / inset, NUM_ZERO, NUM_ONE);
         float coverage = 1.0 - smoothstep(-1.2, 0.9, sd);
-        float transition = smoothstep(NUM_ZERO, NUM_ONE, coverage);
+        float transition = smoothstep(NUM_ZERO, NUM_ONE, coverage) * headFade;
 
         if (transition > best) {
           best = transition;
@@ -268,14 +279,41 @@ function paneVisible(el: HTMLElement) {
   return true
 }
 
+/** Resolve a length custom property on an element to CSS pixels. */
+function cssVarPx(el: HTMLElement, name: string): number {
+  const probe = document.createElement('div')
+  probe.style.cssText = `position:absolute;visibility:hidden;pointer-events:none;height:var(${name});width:0;`
+  el.appendChild(probe)
+  const px = probe.getBoundingClientRect().height
+  probe.remove()
+  return px
+}
+
+/**
+ * Header dissolve band matching `.analysis-stack` mask-image.
+ * Returns CSS-pixel distances from the top of the viewport.
+ */
+function readHeaderFadeBand(): { solid: number; fade: number } {
+  const stack = document.querySelector<HTMLElement>('.analysis-stack')
+  if (!stack) return { solid: 0, fade: 0 }
+  const solid = cssVarPx(stack, '--analysis-header-solid')
+  const fade = cssVarPx(stack, '--analysis-fade')
+  if (!(solid > 0) || !(fade > 0)) return { solid: 0, fade: 0 }
+  return { solid, fade }
+}
+
 function readPanes(canvas: HTMLCanvasElement): Pane[] {
   const dpr = canvas.width / Math.max(canvas.clientWidth, 1)
   const nodes = document.querySelectorAll<HTMLElement>('.liquid-glass')
+  const { solid, fade } = readHeaderFadeBand()
+  const hideBelow = solid // CSS px from top — fully transparent above this
   const panes: Pane[] = []
   nodes.forEach((el) => {
     const rect = el.getBoundingClientRect()
     if (rect.width < 2 || rect.height < 2) return
     if (!paneVisible(el)) return
+    // Fully under the solid header mask — no glass pane to draw.
+    if (hideBelow > 0 && rect.bottom <= hideBelow) return
     const radiusPx = Number.parseFloat(getComputedStyle(el).borderTopLeftRadius) || 24
     panes.push({
       centerX: (rect.left + rect.width / 2) * dpr,
@@ -335,6 +373,8 @@ class LiquidGlassEngine {
     count: WebGLUniformLocation | null
     pane: WebGLUniformLocation | null
     radius: WebGLUniformLocation | null
+    headerSolid: WebGLUniformLocation | null
+    headerFade: WebGLUniformLocation | null
   } | null = null
   private raf = 0
   private running = false
@@ -388,6 +428,8 @@ class LiquidGlassEngine {
       count: gl.getUniformLocation(compProg, 'uCount'),
       pane: gl.getUniformLocation(compProg, 'uPane[0]'),
       radius: gl.getUniformLocation(compProg, 'uRadius[0]'),
+      headerSolid: gl.getUniformLocation(compProg, 'uHeaderSolid'),
+      headerFade: gl.getUniformLocation(compProg, 'uHeaderFade'),
     }
 
     gl.clearColor(0, 0, 0, 0)
@@ -548,6 +590,11 @@ class LiquidGlassEngine {
     this.bindQuad(this.comp)
     gl.uniform3f(uniforms.resolution, this.canvas.width, this.canvas.height, 1)
     gl.uniform1i(uniforms.count, panes.length)
+
+    const dpr = this.canvas.width / Math.max(this.canvas.clientWidth, 1)
+    const band = readHeaderFadeBand()
+    gl.uniform1f(uniforms.headerSolid, band.solid * dpr)
+    gl.uniform1f(uniforms.headerFade, band.fade * dpr)
 
     const paneData = new Float32Array(16)
     const radiusData = new Float32Array(4)

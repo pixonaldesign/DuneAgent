@@ -1,0 +1,183 @@
+"""Build star targets that trace only the Abu Dhabi skyline silhouette.
+
+Same plate and frame as build_skyline.py, but no windows and no reflection:
+the lit city is reduced to its top profile (tower crowns, spires and the
+vertical steps between them). Every dot gets a random size, and dots are
+spaced by their radii plus a jittered gap so neighbours barely touch. The
+output is ordered so every prefix still covers the whole silhouette.
+"""
+from __future__ import annotations
+
+import base64
+import sys
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+from build_skyline import H, SRC, TMP, TOP, W, WATER, blur, smooth
+
+OUT = Path(r"C:\Users\islam\DuneAgent\src\scene\skylineOutline.ts")
+# Dot radius in plate px is R0 + R1 * b**RK for a uniform random b, so most
+# dots are small and a few are large. The runtime uses the same rule.
+R0, R1, RK = 0.4, 1.6, 1.8
+# Clear space between neighbouring dot edges, plate px.
+GAP_MIN, GAP_JITTER = 0.45, 0.9
+# The waterline is not traced under the city; the runtime draws it outward
+# from each end of the profile to the viewport edges, a little dimmer.
+HORIZON_DIM = 0.7
+
+
+def radius(b: float) -> float:
+    return R0 + R1 * b**RK
+
+
+def profile() -> np.ndarray:
+    L = np.asarray(Image.open(SRC).convert("L"), dtype=np.float32) / 255
+    mass = blur(L, 2.2)
+    lit = mass > 0.085
+    lit[: TOP - 4] = False
+    lit[int(WATER) - 2 :] = False
+    top = np.full(W, np.nan)
+    run = 14
+    for x in range(W):
+        col = lit[:, x].astype(np.int32)
+        # A column's top is the first pixel that starts an unbroken lit run,
+        # so a stray sky star above a short building does not become a spike.
+        c = np.concatenate([[0], np.cumsum(col)])
+        full = np.nonzero(c[run:] - c[:-run] == run)[0]
+        if len(full):
+            top[x] = full[0]
+    good = ~np.isnan(top)
+    xs = np.nonzero(good)[0]
+    x0, x1 = int(xs[0]), int(xs[-1])
+    for x in range(x0, x1 + 1):
+        if np.isnan(top[x]):
+            top[x] = WATER
+    t = top[x0 : x1 + 1].copy()
+    # Median 3 removes one-column notches without rounding off the spires.
+    pad = np.pad(t, 1, mode="edge")
+    t = np.median(np.stack([pad[:-2], pad[1:-1], pad[2:]]), axis=0)
+    return x0, t
+
+
+def outline(x0: int, t: np.ndarray) -> list[tuple[float, float]]:
+    pts: list[tuple[float, float]] = [(x0, WATER)]
+    prev = WATER
+    for k, y in enumerate(t):
+        x = x0 + k
+        if abs(y - prev) > 1.5:
+            pts.append((x, prev))
+        pts.append((x, float(y)))
+        prev = float(y)
+    end = x0 + len(t) - 1
+    pts.append((end, WATER))
+    return pts
+
+
+def place_dots(pts, rng):
+    a = np.array(pts, dtype=np.float64)
+    seg = np.hypot(*(a[1:] - a[:-1]).T)
+    s = np.concatenate([[0], np.cumsum(seg)])
+    at, sizes = [], []
+    pos, b = 0.0, float(rng.random())
+    while pos < s[-1]:
+        at.append(pos)
+        sizes.append(b)
+        nb = float(rng.random())
+        pos += radius(b) + radius(nb) + GAP_MIN + GAP_JITTER * float(rng.random())
+        b = nb
+    at = np.array(at)
+    return np.interp(at, s, a[:, 0]), np.interp(at, s, a[:, 1]), np.array(sizes)
+
+
+def van_der_corput(n: int) -> np.ndarray:
+    v = np.zeros(n)
+    for i in range(n):
+        f, k, r = 0.5, i, 0.0
+        while k:
+            r += f * (k & 1)
+            k >>= 1
+            f *= 0.5
+        v[i] = r
+    return v
+
+
+def pack(xs, ys, b) -> str:
+    raw = bytearray()
+    for x, y, v in zip(xs, ys, b):
+        nx = int(round(float(x) / W * 65535))
+        ny = int(round(float(y) / H * 65535))
+        raw += bytes([nx >> 8, nx & 255, ny >> 8, ny & 255, int(round(float(v) * 255))])
+    enc = base64.b64encode(bytes(raw)).decode("ascii")
+    return "[\n" + ",\n".join(f"  '{enc[i:i + 120]}'" for i in range(0, len(enc), 120)) + ",\n].join('')"
+
+
+def main():
+    x0, t = profile()
+    xs, ys, b = place_dots(outline(x0, t), np.random.default_rng(11))
+    n = len(xs)
+    order = np.argsort(van_der_corput(n), kind="stable")
+    left, right = x0 / W, (x0 + len(t) - 1) / W
+    print("outline points", n, "span", round(left, 4), round(right, 4))
+
+    img = Image.new("RGB", (W * 2, H * 2), (0, 0, 0))
+    dr = ImageDraw.Draw(img)
+    for i in order:
+        bb = float(b[i])
+        rad = 2 * radius(bb)
+        c = int(80 + 175 * bb)
+        x, y = xs[i] * 2, ys[i] * 2
+        dr.ellipse((x - rad, y - rad, x + rad, y + rad), fill=(c, c, c))
+    img.save(TMP / "outline-preview.png")
+
+    if "--write" in sys.argv:
+        o = order
+        text = f"""// Star targets tracing only the Abu Dhabi skyline silhouette: tower
+// crowns, spires and the steps between them. The waterline is left open
+// under the city and drawn at runtime from each end out to the viewport.
+// Same plate frame as skylineGrains.ts. Records are uint16 x, uint16 y and
+// a uint8 random size, ordered so any prefix spans the whole outline.
+// Generated by tmp-skyline/build_outline.py.
+
+import type {{ SkylineGrains }} from './skylineGrains'
+
+/** Plate x where the profile meets the waterline on the left and right. */
+export const OUTLINE_LEFT = {left:.6f}
+export const OUTLINE_RIGHT = {right:.6f}
+export const OUTLINE_HORIZON_DIM = {HORIZON_DIM}
+
+/** Dot radius in plate px for a size in 0–1; dots are spaced edge to edge by this. */
+export function outlineRadius(b: number) {{
+  return {R0} + {R1} * b ** {RK}
+}}
+
+/** Clear space between neighbouring dots, plate px, before and after jitter. */
+export const OUTLINE_GAP_MIN = {GAP_MIN}
+export const OUTLINE_GAP_JITTER = {GAP_JITTER}
+
+const PACK = {pack(xs[o], ys[o], b[o])}
+
+function unpack(packed: string): SkylineGrains {{
+  const raw = atob(packed)
+  const n = (raw.length / 5) | 0
+  const x = new Float32Array(n)
+  const y = new Float32Array(n)
+  const b = new Float32Array(n)
+  for (let i = 0; i < n; i++) {{
+    const o = i * 5
+    x[i] = ((raw.charCodeAt(o) << 8) | raw.charCodeAt(o + 1)) / 65535
+    y[i] = ((raw.charCodeAt(o + 2) << 8) | raw.charCodeAt(o + 3)) / 65535
+    b[i] = raw.charCodeAt(o + 4) / 255
+  }}
+  return {{ n, x, y, b }}
+}}
+
+export const OUTLINE_GRAINS = unpack(PACK)
+"""
+        OUT.write_text(text, encoding="utf-8", newline="\n")
+        print("wrote", OUT, OUT.stat().st_size, "bytes")
+
+
+if __name__ == "__main__":
+    main()

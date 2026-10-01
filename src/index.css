@@ -285,6 +285,46 @@ body {
   pointer-events: none;
 }
 
+.skyline-switch {
+  position: absolute;
+  left: 50%;
+  top: var(--chrome-top);
+  z-index: 6;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 360px;
+  translate: -50% 0;
+  pointer-events: auto;
+}
+
+.skyline-switch-opt {
+  appearance: none;
+  padding: 6px 16px;
+  border: 0;
+  border-radius: 360px;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: var(--type-ui);
+  font-weight: 400;
+  letter-spacing: var(--tracking-body);
+  line-height: var(--leading-ui);
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.35s var(--ease-out), color 0.35s var(--ease-out);
+}
+
+.skyline-switch-opt:hover,
+.skyline-switch-opt:focus-visible {
+  color: var(--white);
+}
+
+.skyline-switch-opt.is-on {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--white);
+}
+
 .app.is-voicing .map-host {
   opacity: 0;
   pointer-events: none;

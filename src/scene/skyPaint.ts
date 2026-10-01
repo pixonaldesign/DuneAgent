@@ -2,13 +2,39 @@ import { getPhase, samplePalette, sunDirection } from './dayNight'
 import { getSkyTravel } from './flyProgress'
 import { getVoice, tickVoice, voiceAmp, voiceBlend } from '../voice'
 import { readBands } from '../micSpectrum'
-import { SKYLINE_ASPECT, SKYLINE_GRAINS, SKYLINE_WATER } from './skylineGrains'
+import { SKYLINE_ASPECT, SKYLINE_GRAINS, SKYLINE_WATER, type SkylineGrains } from './skylineGrains'
+import {
+  OUTLINE_GAP_JITTER,
+  OUTLINE_GAP_MIN,
+  OUTLINE_GRAINS,
+  OUTLINE_HORIZON_DIM,
+  OUTLINE_LEFT,
+  OUTLINE_RIGHT,
+  outlineRadius,
+} from './skylineOutline'
+import {
+  COMPACT_BASE,
+  COMPACT_BUILDING_DELAY,
+  COMPACT_BUILDING_DEPTH,
+  COMPACT_BUILDING_X,
+  COMPACT_DETAIL_BIT,
+  COMPACT_TOP,
+  COMPACT_GAP_JITTER,
+  COMPACT_GAP_MIN,
+  COMPACT_GRAINS,
+  COMPACT_LEFT,
+  COMPACT_RIGHT,
+  compactRadius,
+} from './skylineCompact'
+import { getSkylineVariant, type SkylineVariant } from './skylineVariant'
 
 /** Screen-space rise of the shared star field, matched to the camera fly. */
 const FLY_SKY_LIFT = 0.38
 /** Fully visible above this normalized y; gone by +0.14. Matches the idle fade. */
 const STAR_FADE_START = 0.68
 const STAR_FADE_END = STAR_FADE_START + 0.14
+/** Sky stars sit a step below full brightness so headline and body text stay readable over them. */
+const SKY_STAR_DIM = 0.4
 /** Share of the visible stars that leave the sky for the skyline. */
 const DRAFT_SHARE = 0.86
 /** Latest start of a star's flight, as a fraction of the gather. */
@@ -42,9 +68,24 @@ const slotOf = new Uint16Array(STARS.length)
 const homeNx = new Float32Array(STARS.length)
 const homeNy = new Float32Array(STARS.length)
 
+/** Where each star was last drawn, so a variant switch can glide from there. */
+const lastX = new Float32Array(STARS.length)
+const lastY = new Float32Array(STARS.length)
+const lastR = new Float32Array(STARS.length)
+const lastA = new Float32Array(STARS.length)
+const lastT = new Float32Array(STARS.length)
+const fromX = new Float32Array(STARS.length)
+const fromY = new Float32Array(STARS.length)
+const fromR = new Float32Array(STARS.length)
+const fromA = new Float32Array(STARS.length)
+const fromT = new Float32Array(STARS.length)
+const MORPH_SECONDS = 1.1
+let morphAt = -1
+
 let pauseOffset = 0
 let frozenClock: number | null = null
 let homesReady = false
+let assigned: SkylineVariant = 'city'
 /** Reflection columns across the plate, and the mirrored spectrum bands feeding them. */
 const REFL_COLS = 112
 const REFL_BANDS = REFL_COLS / 2
@@ -54,6 +95,39 @@ const REFL_COLUMN_SNAP = 0.7
 const REFL_REST = 0.14
 /** Mouse parallax travel at full depth, as a share of the shorter viewport side. */
 const PARALLAX = 0.014
+/** Outline variant: how far tower tops stretch at full voice, as a share of their height. */
+const OUTLINE_LIFT = 0.12
+/** Compact variant: mean low-band level that counts as speaking. */
+const COMPACT_SPEAK_ON = 0.1
+/** Compact variant: speech presence gained and lost per second. */
+const COMPACT_PRESENCE_UP = 0.6
+const COMPACT_PRESENCE_DOWN = 0.28
+/** Compact variant: share of the presence ramp spent waiting for the edge buildings. */
+const COMPACT_SPREAD = 0.45
+/** Compact variant: brightness of collapsed buildings lying on the waterline. */
+const COMPACT_REST_ALPHA = 0.16
+const COMPACT_DEPTH_ALPHA = [0.85, 1, 1.2]
+/** Compact variant: interior detail sits under the outline. */
+const COMPACT_DETAIL_ALPHA = 0.72
+/** Compact reflection: vertical squash, extra stretch at full voice, and sideways ripple in plate px under the tallest tower. */
+const COMPACT_REFL_SQUASH = 0.85
+const COMPACT_REFL_VOICE = 0.3
+const COMPACT_REFL_RIPPLE = 0.9
+/** Compact glow: light streaks rising from the waterline and the line itself. */
+const GLOW_RGB: [number, number, number] = [70, 196, 255]
+/** How far compact skyline dots shift from star white toward the glow colour. */
+const COMPACT_TINT = 0.7
+const GLOW_STREAKS = 160
+/** Streak reach above its tallest building at full voice, and its floor in plate heights. */
+const GLOW_OVERSHOOT = 0.6
+const GLOW_VOICE_REACH = 0.1
+const GLOW_STREAK_ALPHA = 0.45
+const GLOW_LINE_ALPHA = 0.75
+/** How far the line glow runs past the skyline ends, as a share of the skyline width. */
+const GLOW_LINE_SPILL = 0.08
+
+const compactRise = new Float32Array(COMPACT_BUILDING_X.length)
+let compactPresence = 0
 
 const bandLevel = new Float32Array(REFL_BANDS)
 const columnLevel = new Float32Array(REFL_COLS)
@@ -146,6 +220,100 @@ function updateColumns(time: number, amp: number) {
 function resetColumns() {
   columnLevel.fill(0)
   columnsAt = 0
+  compactRise.fill(0)
+  compactPresence = 0
+  compactAt = 0
+}
+
+let compactAt = 0
+
+/**
+ * Speech presence climbs while the voice is on and drains in silence. The
+ * landmarks in the middle rise first and the edge buildings follow, so
+ * speaking grows the skyline out of the waterline and a pause sinks it edges first.
+ */
+function updateCompact(time: number) {
+  const dt = compactAt === 0 ? 1 / 60 : Math.min(0.05, Math.max(0, time - compactAt))
+  compactAt = time
+  const lo = REFL_COLS / 4
+  let speech = 0
+  for (let c = lo; c < REFL_COLS - lo; c++) speech += columnLevel[c] ?? 0
+  speech /= REFL_COLS - 2 * lo
+  const step = speech > COMPACT_SPEAK_ON ? COMPACT_PRESENCE_UP : -COMPACT_PRESENCE_DOWN
+  compactPresence = Math.min(1, Math.max(0, compactPresence + step * dt))
+  for (let k = 0; k < compactRise.length; k++) {
+    const delay = COMPACT_SPREAD * (COMPACT_BUILDING_DELAY[k] ?? 0)
+    compactRise[k] = smoothstep((compactPresence - delay) / (1 - COMPACT_SPREAD))
+  }
+}
+
+/** Streak x (plate), height of the tallest outline under it (plate heights), its building, and a random gain. */
+const STREAKS = (() => {
+  const g = COMPACT_GRAINS
+  const span = COMPACT_RIGHT - COMPACT_LEFT
+  const half = span / GLOW_STREAKS / 2
+  return Array.from({ length: GLOW_STREAKS }, (_, k) => {
+    const x = COMPACT_LEFT + span * ((k + 0.5 + 0.7 * (hash(k * 3.17 + 0.4) - 0.5)) / GLOW_STREAKS)
+    let top = 0
+    let building = -1
+    for (let i = 0; i < g.n; i++) {
+      const raw = g.building[i] ?? COMPACT_BASE
+      if (raw === COMPACT_BASE || raw & COMPACT_DETAIL_BIT || Math.abs((g.x[i] ?? 0) - x) > half) continue
+      const hgt = SKYLINE_WATER - (g.y[i] ?? SKYLINE_WATER)
+      if (hgt > top) {
+        top = hgt
+        building = raw
+      }
+    }
+    return { x, top, building, gain: 0.55 + 0.75 * hash(k * 7.7 + 1.3) }
+  })
+})()
+
+export type GlowSegment = { x0: number; y0: number; x1: number; y1: number; hw: number; a: number }
+
+const glowSegs: GlowSegment[] = []
+let glowFade = 0
+let glowAt = 0
+
+function pushGlow(x0: number, y0: number, x1: number, y1: number, hw: number, a: number) {
+  if (a < 0.01 || (Math.abs(x1 - x0) < 0.5 && Math.abs(y1 - y0) < 0.5)) return
+  glowSegs.push({ x0, y0, x1, y1, hw, a })
+}
+
+/**
+ * Light streaks for the compact skyline, fading out from the waterline both
+ * ways. Each rises with the building under it and reaches past the roofline
+ * with its part of the voice; the waterline itself glows brightest.
+ */
+function compactGlows(w: number, h: number, time: number, blend: number) {
+  glowSegs.length = 0
+  const place = skylineFrame(w, h)
+  const sway = Math.min(w, h) * PARALLAX * blend
+  const panX = -pointer.x * sway * 0.75
+  const water = place.waterY - pointer.y * sway * 0.5 * 0.75
+  for (const s of STREAKS) {
+    if (s.building < 0) continue
+    const rise = compactRise[s.building] ?? 0
+    if (rise <= 0.01) continue
+    const level = columnAt(s.x)
+    const flicker = 0.85 + 0.15 * Math.sin(time * (2.1 + s.gain) + s.x * 90)
+    const up = (s.top * rise * (1 + GLOW_OVERSHOOT * level * s.gain) + GLOW_VOICE_REACH * level * s.gain) * place.dh
+    const down = up * COMPACT_REFL_SQUASH * (1 + COMPACT_REFL_VOICE * level)
+    const a = GLOW_STREAK_ALPHA * blend * rise * (0.25 + 0.75 * level) * s.gain * flicker
+    const x = place.ox + s.x * place.dw + panX
+    const hw = place.px * (0.9 + 0.9 * s.gain)
+    pushGlow(x, water, x, water - up, hw, a)
+    pushGlow(x, water, x, water + down, hw, a * 0.85)
+  }
+  const left = place.ox + COMPACT_LEFT * place.dw + panX
+  const right = place.ox + COMPACT_RIGHT * place.dw + panX
+  const mid = (left + right) / 2
+  const reach = (right - left) * (0.5 + GLOW_LINE_SPILL)
+  const a = GLOW_LINE_ALPHA * blend * (0.55 + 0.45 * compactPresence)
+  const hw = place.px * 3.2
+  pushGlow(mid, water, mid - reach, water, hw, a)
+  pushGlow(mid, water, mid + reach, water, hw, a)
+  return glowSegs
 }
 
 /** Pointer position in −1…1, eased so the parallax glides. */
@@ -168,7 +336,7 @@ function restNorm(star: Star, clock: number, travel: number) {
 
 function starVis(star: Star, clock: number, starOpacity: number) {
   const twinkle = 0.88 + 0.12 * (0.5 + 0.5 * Math.sin(clock * star.tw + star.ph))
-  const vis = Math.max(starOpacity, star.glint ? 0.2 : 0) * star.b * twinkle
+  const vis = Math.max(starOpacity, star.glint ? 0.2 : 0) * star.b * twinkle * SKY_STAR_DIM
   return { vis, gain: star.glint ? 1.9 : 1.05 }
 }
 
@@ -187,6 +355,9 @@ function smoothstep(t: number) {
   return u * u * (3 - 2 * u)
 }
 
+/** Width of the source plate in px; grain radii and gaps are authored in plate px. */
+const SKYLINE_PLATE_W = 1024
+
 function skylineFrame(w: number, h: number) {
   const inset = 0.035
   const availW = w * (1 - inset * 2)
@@ -199,7 +370,7 @@ function skylineFrame(w: number, h: number) {
   }
   const ox = (w - dw) / 2
   const oy = (h - dh) / 2
-  return { ox, oy, dw, dh, waterY: oy + SKYLINE_WATER * dh, px: dw / 1024 }
+  return { ox, oy, dw, dh, waterY: oy + SKYLINE_WATER * dh, px: dw / SKYLINE_PLATE_W }
 }
 
 type Placement = ReturnType<typeof skylineFrame>
@@ -207,11 +378,10 @@ type Placement = ReturnType<typeof skylineFrame>
 const PROX_COLS = 48
 
 /** Coarse 0–1 map of how close each part of the screen is to the skyline. */
-function skylineProximity(place: Placement, w: number, h: number) {
+function skylineProximity(place: Placement, w: number, h: number, g: SkylineGrains) {
   const cols = PROX_COLS
   const rows = Math.max(2, Math.round((cols * h) / Math.max(1, w)))
   let grid = new Float32Array(cols * rows)
-  const g = SKYLINE_GRAINS
   for (let k = 0; k < g.n; k++) {
     const sx = place.ox + (g.x[k] ?? 0) * place.dw
     const sy = place.oy + (g.y[k] ?? 0) * place.dh
@@ -257,9 +427,96 @@ function skylineProximity(place: Placement, w: number, h: number) {
  * Drafted stars are matched to targets column by column, then top to bottom,
  * so every star flies to a part of the city near where it was.
  */
-function captureAssignments(clock: number, w: number, h: number, travel: number) {
+let activeGrains: SkylineGrains = SKYLINE_GRAINS
+
+type Profile = {
+  base: SkylineGrains
+  left: number
+  right: number
+  radius: (b: number) => number
+  gapMin: number
+  gapJitter: number
+  key: string
+  grains: SkylineGrains
+}
+
+const OUTLINE_PROFILE: Profile = {
+  base: OUTLINE_GRAINS,
+  left: OUTLINE_LEFT,
+  right: OUTLINE_RIGHT,
+  radius: outlineRadius,
+  gapMin: OUTLINE_GAP_MIN,
+  gapJitter: OUTLINE_GAP_JITTER,
+  key: '',
+  grains: OUTLINE_GRAINS,
+}
+
+const COMPACT_PROFILE: Profile = {
+  base: COMPACT_GRAINS,
+  left: COMPACT_LEFT,
+  right: COMPACT_RIGHT,
+  radius: compactRadius,
+  gapMin: COMPACT_GAP_MIN,
+  gapJitter: COMPACT_GAP_JITTER,
+  key: '',
+  grains: COMPACT_GRAINS,
+}
+
+/** A traced profile plus a waterline running from each end past the viewport edges. */
+function withHorizon(profile: Profile, place: Placement, w: number, h: number) {
+  const key = `${w}x${h}`
+  if (key === profile.key) return profile.grains
+  const { base, radius } = profile
+  // Overshoot the edges by the parallax travel so the line never pulls in from them.
+  const margin = (Math.min(w, h) * PARALLAX) / place.dw
+  const leftEdge = -place.ox / place.dw - margin
+  const rightEdge = (w - place.ox) / place.dw + margin
+  const hx: number[] = []
+  const hb: number[] = []
+  // Same rule as the generated profile: random sizes, spaced edge to edge with a jittered gap.
+  for (const dir of [-1, 1]) {
+    const start = dir < 0 ? profile.left : profile.right
+    const limit = dir < 0 ? start - leftEdge : rightEdge - start
+    let k = 0
+    let prev = radius(hash(dir * 17.3))
+    let pos = 0
+    for (;;) {
+      const size = hash(k * 7.31 + dir * 3.9 + 0.5)
+      const gap = profile.gapMin + profile.gapJitter * hash(k * 2.17 + dir * 9.1)
+      pos += (prev + radius(size) + gap) / SKYLINE_PLATE_W
+      if (pos > limit) break
+      hx.push(start + dir * pos)
+      hb.push(size)
+      prev = radius(size)
+      k++
+    }
+  }
+  const n = base.n + hx.length
+  const x = new Float32Array(n)
+  const y = new Float32Array(n)
+  const b = new Float32Array(n)
+  x.set(base.x)
+  y.set(base.y)
+  b.set(base.b)
+  x.set(hx, base.n)
+  y.fill(SKYLINE_WATER, base.n)
+  b.set(hb, base.n)
+  profile.key = key
+  profile.grains = { n, x, y, b }
+  return profile.grains
+}
+
+function grainsFor(variant: SkylineVariant, place: Placement, w: number, h: number) {
+  if (variant === 'outline') return withHorizon(OUTLINE_PROFILE, place, w, h)
+  if (variant === 'compact') return withHorizon(COMPACT_PROFILE, place, w, h)
+  return SKYLINE_GRAINS
+}
+
+function captureAssignments(clock: number, w: number, h: number, travel: number, variant: SkylineVariant) {
   const place = skylineFrame(w, h)
-  const near = skylineProximity(place, w, h)
+  const g = grainsFor(variant, place, w, h)
+  activeGrains = g
+  const near = skylineProximity(place, w, h, g)
   const pool: { i: number; key: number }[] = []
 
   for (let i = 0; i < STARS.length; i++) {
@@ -278,7 +535,6 @@ function captureAssignments(clock: number, w: number, h: number, travel: number)
   }
 
   pool.sort((a, b) => b.key - a.key)
-  const g = SKYLINE_GRAINS
   const n = Math.min(g.n, Math.round(pool.length * DRAFT_SHARE))
   const movers = pool.slice(0, n).map((p) => p.i)
   const targets = Array.from({ length: n }, (_, k) => k)
@@ -295,11 +551,23 @@ function captureAssignments(clock: number, w: number, h: number, travel: number)
       const i = ms[k] ?? 0
       const slot = ts[k] ?? 0
       slotOf[i] = slot
-      roleOf[i] = (g.y[slot] ?? 0) > SKYLINE_WATER ? ROLE_REFL : ROLE_CITY
+      roleOf[i] = variant === 'city' && (g.y[slot] ?? 0) > SKYLINE_WATER ? ROLE_REFL : ROLE_CITY
     }
   }
 
   homesReady = true
+  assigned = variant
+}
+
+/** Re-target the formed stars to the other variant, gliding from where they are drawn now. */
+function beginMorph(clock: number, time: number, w: number, h: number, travel: number, variant: SkylineVariant) {
+  fromX.set(lastX)
+  fromY.set(lastY)
+  fromR.set(lastR)
+  fromA.set(lastA)
+  fromT.set(lastT)
+  morphAt = time
+  captureAssignments(clock, w, h, travel, variant)
 }
 
 /** Parallax depth of a sky star: far stars barely move, near ones drift more. */
@@ -317,11 +585,11 @@ function beginStars() {
   drawnN = 0
 }
 
-function emit(x: number, y: number, r: number, a: number, glint: boolean, unit: number) {
+function emit(x: number, y: number, r: number, a: number, glint: boolean, unit: number, tint = 0) {
   if (a < 0.04 || y < -8 * unit) return
   let s = drawn[drawnN]
   if (!s) {
-    s = { x, y, r, a, glint }
+    s = { x, y, r, a, glint, tint }
     drawn[drawnN] = s
   } else {
     s.x = x
@@ -329,6 +597,7 @@ function emit(x: number, y: number, r: number, a: number, glint: boolean, unit: 
     s.r = r
     s.a = a
     s.glint = glint
+    s.tint = tint
   }
   drawnN++
 }
@@ -348,6 +617,39 @@ function paintIdle(clock: number, travel: number, w: number, h: number, unit: nu
   return finishStars()
 }
 
+/** Column depth between column centres, so the outline bends smoothly instead of stepping. */
+function columnAt(gx: number) {
+  const f = Math.min(REFL_COLS - 1, Math.max(0, gx * REFL_COLS - 0.5))
+  const c = Math.floor(f)
+  return mix(columnLevel[c] ?? 0, columnLevel[Math.min(REFL_COLS - 1, c + 1)] ?? 0, f - c)
+}
+
+function emitStar(
+  i: number,
+  x: number,
+  y: number,
+  r: number,
+  a: number,
+  glint: boolean,
+  unit: number,
+  morph: number,
+  tint = 0,
+) {
+  if (morph < 1) {
+    x = mix(fromX[i] ?? x, x, morph)
+    y = mix(fromY[i] ?? y, y, morph)
+    r = mix(fromR[i] ?? r, r, morph)
+    a = mix(fromA[i] ?? a, a, morph)
+    tint = mix(fromT[i] ?? tint, tint, morph)
+  }
+  lastX[i] = x
+  lastY[i] = y
+  lastR[i] = r
+  lastA[i] = a
+  lastT[i] = tint
+  emit(x, y, r, a, glint, unit, tint)
+}
+
 function paintGather(
   clock: number,
   time: number,
@@ -358,13 +660,18 @@ function paintGather(
   blend: number,
 ) {
   const place = skylineFrame(w, h)
-  const g = SKYLINE_GRAINS
+  const outline = assigned === 'outline'
+  const compact = assigned === 'compact'
+  const g = activeGrains
   // The city stays legible when the sky is too bright for the idle stars.
   const lum = 0.45 + 0.55 * starOpacity
-  const skyDim = 1 - 0.3 * blend
+  // A bare outline has far fewer dots than the full city, so the sky steps further back.
+  const skyDim = 1 - (outline ? 0.5 : compact ? 0.42 : 0.3) * blend
   const sway = Math.min(w, h) * PARALLAX * blend
   const panX = -pointer.x * sway
   const panY = -pointer.y * sway * 0.5
+  const morph = morphAt < 0 ? 1 : smoothstep((time - morphAt) / MORPH_SECONDS)
+  if (morph >= 1) morphAt = -1
   beginStars()
   for (let i = 0; i < STARS.length; i++) {
     const star = STARS[i]
@@ -384,7 +691,31 @@ function paintGather(
       let tx = place.ox + gx * place.dw
       let ty: number
       let a = lum * (0.12 + 0.88 * gb ** 1.35)
-      if (kind === ROLE_CITY) {
+      let reflects = false
+      if (compact) {
+        const twinkle = 0.88 + 0.12 * Math.sin(time * (0.6 + star.tw) + star.ph)
+        a = lum * (0.45 + 0.55 * gb) * twinkle
+        ty = place.oy + gy * place.dh
+        const raw = slot < COMPACT_GRAINS.n ? (COMPACT_GRAINS.building[slot] ?? COMPACT_BASE) : COMPACT_BASE
+        if (raw !== COMPACT_BASE) {
+          const bid = raw & ~COMPACT_DETAIL_BIT
+          const rise = compactRise[bid] ?? 0
+          // Risen buildings still breathe a little with their part of the spectrum.
+          const bounce = 0.94 + 0.06 * Math.min(1, columnAt(COMPACT_BUILDING_X[bid] ?? 0.5) * 1.5)
+          ty = place.waterY - (place.waterY - ty) * rise * bounce
+          a *= (COMPACT_DEPTH_ALPHA[COMPACT_BUILDING_DEPTH[bid] ?? 2] ?? 1) * mix(COMPACT_REST_ALPHA, 1, rise)
+          if (raw & COMPACT_DETAIL_BIT) a *= COMPACT_DETAIL_ALPHA
+          reflects = true
+        } else if (slot >= COMPACT_GRAINS.n) {
+          a *= OUTLINE_HORIZON_DIM
+        }
+      } else if (outline) {
+        // Tower tops stretch with the voice while the waterline stays put.
+        const level = columnAt(gx)
+        ty = place.oy + gy * place.dh - (SKYLINE_WATER - gy) * place.dh * OUTLINE_LIFT * level
+        a = lum * (0.45 + 0.55 * gb) * (0.88 + 0.12 * Math.sin(time * (0.6 + star.tw) + star.ph)) * (0.85 + 0.3 * level)
+        if (slot >= OUTLINE_GRAINS.n) a *= OUTLINE_HORIZON_DIM
+      } else if (kind === ROLE_CITY) {
         ty = place.oy + gy * place.dh
         a *= 0.84 + 0.16 * Math.sin(time * (0.6 + star.tw) + star.ph)
       } else {
@@ -398,21 +729,40 @@ function paintGather(
         // Compressed columns stack dots, so ease brightness down to keep them from blowing out.
         a *= (0.5 + 0.5 * stretch) * (0.75 + 0.25 * Math.sin(time * (1.8 + star.tw) + gy * 240) ** 2)
       }
-      const settledR = Math.max(0.7 * unit, place.px * (0.55 + 1.6 * gb * gb))
+      const settledR = compact
+        ? Math.max(0.45 * unit, place.px * compactRadius(gb))
+        : outline
+          ? Math.max(0.45 * unit, place.px * outlineRadius(gb))
+          : Math.max(0.7 * unit, place.px * (0.55 + 1.6 * gb * gb))
       const t = flight(i, blend)
       // A slight bow so the stars swirl in rather than slide on rails.
       const bow = Math.sin(Math.PI * t) * 0.16 * (hash(i * 3.7 + 0.2) - 0.5)
       const x = mix(hx, tx, t) - (ty - hy) * bow
       const y = mix(hy, ty, t) + (tx - hx) * bow
-      const glint = t > 0.6 ? kind === ROLE_CITY && gb > 0.8 : star.glint
+      const glint = t > 0.6 ? kind === ROLE_CITY && gb > (outline || compact ? 0.95 : 0.8) : star.glint
       // The skyline is the mid layer; stars still in flight carry their sky depth.
       const depthK = mix(skyDepth(i), 0.75, t)
-      emit(x + panX * depthK, y + panY * depthK, mix(r, settledR, t), mix(homeA, Math.min(0.95, a), t), glint, unit)
+      const sr = mix(r, settledR, t)
+      const sa = mix(homeA, Math.min(0.95, a), t)
+      const tint = compact ? COMPACT_TINT * t : 0
+      emitStar(i, x + panX * depthK, y + panY * depthK, sr, sa, glint, unit, morph, tint)
+      if (reflects && t > 0.5) {
+        // Mirror the drawn dot under the waterline; the reflection squashes, ripples and fades with depth.
+        const water = place.waterY + panY * 0.75
+        const d = water - (lastY[i] ?? water)
+        if (d > 0) {
+          const stretch = COMPACT_REFL_SQUASH * (1 + COMPACT_REFL_VOICE * columnAt(gx))
+          const deep = Math.min(1, (d * stretch) / (COMPACT_TOP * place.dh))
+          const ripple = Math.sin(time * 1.7 + d * 0.3 / place.px + star.ph * 0.3) * place.px * COMPACT_REFL_RIPPLE * deep
+          const ra = (lastA[i] ?? 0) * smoothstep((t - 0.5) * 2)
+          emit((lastX[i] ?? 0) + ripple, water + d * stretch, lastR[i] ?? sr, ra, false, unit, lastT[i] ?? 0)
+        }
+      }
     } else if (kind === ROLE_SKY) {
       const depthK = skyDepth(i)
-      emit(hx + panX * depthK, hy + panY * depthK, r, homeA * skyDim, star.glint, unit)
+      emitStar(i, hx + panX * depthK, hy + panY * depthK, r, homeA * skyDim, star.glint, unit, morph)
     } else {
-      emit(hx, hy, r, homeA, star.glint, unit)
+      emitStar(i, hx, hy, r, homeA, star.glint, unit, morph)
     }
   }
   return finishStars()
@@ -501,7 +851,8 @@ export const SKY_VEIL_ANGLE = -0.36
 
 type Circle = { x: number; y: number; r: number }
 
-export type SkyStar = { x: number; y: number; r: number; a: number; glint: boolean }
+/** `tint` mixes the star colour toward the glow colour, 0 … 1. */
+export type SkyStar = { x: number; y: number; r: number; a: number; glint: boolean; tint: number }
 
 /** Everything needed to draw one sky frame, in the pixel space of a `w`×`h` target. */
 export type SkyFrame = {
@@ -520,6 +871,10 @@ export type SkyFrame = {
   veilOrigin: { x: number; y: number }
   starRgb: [number, number, number]
   stars: SkyStar[]
+  /** Additive light streaks: brightest at (x0, y0), gone by (x1, y1), soft across a half-width `hw`. */
+  glows: GlowSegment[]
+  glowRgb: [number, number, number]
+  glowGain: number
 }
 
 let latest: SkyFrame | null = null
@@ -574,6 +929,9 @@ export function computeSky(w: number, h: number, time = performance.now() / 1000
     veilOrigin: { x: w * 0.5, y: h * 0.2 + extra },
     starRgb: hexRgb(mixHex('#e8f0f8', palette.sunColor, 0.18)),
     stars: [],
+    glows: [],
+    glowRgb: GLOW_RGB,
+    glowGain: 0,
   }
   tickVoice()
   const voice = getVoice()
@@ -581,17 +939,34 @@ export function computeSky(w: number, h: number, time = performance.now() / 1000
   const clock = skyTime(time, active)
   const blend = voiceBlend()
   const amp = voiceAmp()
+  const variant = getSkylineVariant()
   if (!active) {
     homesReady = false
+    morphAt = -1
     resetColumns()
+    glowSegs.length = 0
+    glowFade = 0
+    glowAt = 0
   } else if (!homesReady || blend <= 0.001) {
-    captureAssignments(clock, w, h, travel)
+    captureAssignments(clock, w, h, travel, variant)
+  } else if (variant !== assigned) {
+    beginMorph(clock, time, w, h, travel, variant)
   }
 
   if (homesReady && blend > 0.001) {
     updateColumns(time, amp)
+    updateCompact(time)
     tickPointer(time)
     frame.stars = paintGather(clock, time, w, h, unit, palette.starOpacity, blend)
+    // Leaving the compact variant freezes the last streaks and fades them with the morph.
+    const dt = glowAt === 0 ? 1 / 60 : Math.min(0.05, Math.max(0, time - glowAt))
+    glowAt = time
+    glowFade += ((assigned === 'compact' ? 1 : 0) - glowFade) * (1 - Math.exp(-dt * 3.5))
+    if (assigned === 'compact') compactGlows(w, h, time, blend)
+    if (glowFade > 0.01) {
+      frame.glows = glowSegs
+      frame.glowGain = glowFade
+    }
   } else {
     frame.stars = paintIdle(clock, travel, w, h, unit, palette.starOpacity)
   }
@@ -651,6 +1026,37 @@ export function drawSky2D(ctx: CanvasRenderingContext2D, f: SkyFrame) {
   const [sr, sg, sb] = f.starRgb
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
-  for (const s of f.stars) drawStar(ctx, s.x, s.y, s.r, s.a, s.glint, sr, sg, sb)
+  for (const g of f.glows) drawGlow(ctx, g, f.glowRgb, f.glowGain)
+  const [gr, gg, gb] = f.glowRgb
+  for (const s of f.stars) {
+    const k = s.tint
+    if (k <= 0) drawStar(ctx, s.x, s.y, s.r, s.a, s.glint, sr, sg, sb)
+    else drawStar(ctx, s.x, s.y, s.r, s.a, s.glint, Math.round(mix(sr, gr, k)), Math.round(mix(sg, gg, k)), Math.round(mix(sb, gb, k)))
+  }
+  ctx.restore()
+}
+
+/** Halo and core widths (in half-widths) with their strengths; the GPU path uses Gaussians instead. */
+const GLOW_BANDS: [number, number, boolean][] = [
+  [2.6, 0.12, false],
+  [1.3, 0.22, false],
+  [0.32, 0.7, true],
+]
+
+function drawGlow(ctx: CanvasRenderingContext2D, g: GlowSegment, rgb: [number, number, number], gain: number) {
+  const len = Math.hypot(g.x1 - g.x0, g.y1 - g.y0)
+  ctx.save()
+  ctx.translate(g.x0, g.y0)
+  ctx.rotate(Math.atan2(g.y1 - g.y0, g.x1 - g.x0))
+  for (const [width, strength, core] of GLOW_BANDS) {
+    const [r, gr, b] = core ? rgb.map((c) => Math.round(c + (255 - c) * 0.6)) : rgb
+    const a = Math.min(1, g.a * gain * strength)
+    const grad = ctx.createLinearGradient(0, 0, len, 0)
+    grad.addColorStop(0, `rgba(${r},${gr},${b},${a})`)
+    grad.addColorStop(0.35, `rgba(${r},${gr},${b},${a * 0.42})`)
+    grad.addColorStop(1, `rgba(${r},${gr},${b},0)`)
+    ctx.fillStyle = grad
+    ctx.fillRect(0, -g.hw * width, len, g.hw * width * 2)
+  }
   ctx.restore()
 }

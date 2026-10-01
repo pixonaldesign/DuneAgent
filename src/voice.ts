@@ -1,3 +1,5 @@
+import { startMic, stopMic } from './micSpectrum'
+
 export type VoiceMode = 'idle' | 'forming' | 'listening' | 'disbanding'
 
 export type VoiceState = {
@@ -35,12 +37,14 @@ export function subscribeVoice(fn: (next: VoiceState) => void) {
 export function startVoice() {
   if (state.mode !== 'idle') return
   state = { mode: 'forming', modeAt: performance.now() }
+  startMic()
   emit()
 }
 
 export function stopVoice() {
   if (state.mode !== 'forming' && state.mode !== 'listening') return
   state = { mode: 'disbanding', modeAt: performance.now() }
+  stopMic()
   emit()
 }
 
@@ -54,7 +58,7 @@ export function tickVoice(now = performance.now()) {
   }
 }
 
-/** 0 = starfield, 1 = horizontal constellation. */
+/** 0 = starfield, 1 = Abu Dhabi skyline. */
 export function voiceBlend(now = performance.now()) {
   const { mode, modeAt } = state
   if (mode === 'idle') return 0

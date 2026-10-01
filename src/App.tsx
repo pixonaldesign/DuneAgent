@@ -14,7 +14,7 @@ import { CommandMenu } from './ui/CommandMenu'
 import type { ImpactPlanId } from './data/impactPlans'
 import { impactPlanById } from './data/impactPlans'
 import { briefingSummary, scenarioById, titleForPrompt, type ScenarioId } from './data/scenarios'
-import { getVoice, subscribeVoice } from './voice'
+import { getVoice, stopVoice, subscribeVoice } from './voice'
 import { asset } from './asset'
 import { SidebarSimple } from '@phosphor-icons/react/SidebarSimple'
 import { ArrowsOut } from '@phosphor-icons/react/ArrowsOut'
@@ -96,6 +96,9 @@ export default function App() {
   }
 
   function back() {
+    // Leave recording before the page changes so the skyline disbands
+    // instead of staying formed on the screen we return to.
+    stopVoice()
     if (phase === 'techEntry') {
       setPhase('landing')
       setKeepDunes(true)

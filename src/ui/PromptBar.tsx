@@ -41,8 +41,10 @@ export function PromptBar({ onSubmit, shifted = false }: Props) {
   }
 
   useEffect(() => {
-    if (!pendingTranscript.current) return
-    if (voice.mode === 'disbanding') beginTranscript()
+    if (voice.mode !== 'disbanding' || !pendingTranscript.current) return
+    // The mic button starts the transcript itself. A stop from Back
+    // should drop the pending recording instead of filling the prompt.
+    pendingTranscript.current = false
   }, [voice.mode])
 
   useEffect(() => {

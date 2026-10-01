@@ -1,9 +1,23 @@
 import { getPhase, samplePalette, sunDirection } from './dayNight'
 import { getSkyTravel } from './flyProgress'
 import { getVoice, tickVoice, voiceAmp, voiceBlend } from '../voice'
+import { readBands } from '../micSpectrum'
+import { SKYLINE_ASPECT, SKYLINE_GRAINS, SKYLINE_WATER } from './skylineGrains'
 
 /** Screen-space rise of the shared star field, matched to the camera fly. */
 const FLY_SKY_LIFT = 0.38
+/** Fully visible above this normalized y; gone by +0.14. Matches the idle fade. */
+const STAR_FADE_START = 0.68
+const STAR_FADE_END = STAR_FADE_START + 0.14
+/** Share of the visible stars that leave the sky for the skyline. */
+const DRAFT_SHARE = 0.86
+/** Latest start of a star's flight, as a fraction of the gather. */
+const GATHER_STAGGER = 0.32
+
+const ROLE_IDLE = 0
+const ROLE_SKY = 1
+const ROLE_CITY = 2
+const ROLE_REFL = 3
 
 type Star = {
   x: number
@@ -15,17 +29,51 @@ type Star = {
   glint: boolean
 }
 
-const STARS: Star[] = makeStars(280)
+/**
+ * One population for the idle night sky and the skyline. Sized so the stars
+ * that sit below the tower tops after the fly can cover the city and
+ * reflection dots, while the stars already above the towers stay in the sky.
+ */
+const FIELD_COUNT = 6200
+const STARS: Star[] = makeStars(FIELD_COUNT)
 
-type FrozenStar = {
-  starIndex: number
-  nx: number
-  ny: number
-}
+const roleOf = new Uint8Array(STARS.length)
+const slotOf = new Uint16Array(STARS.length)
+const homeNx = new Float32Array(STARS.length)
+const homeNy = new Float32Array(STARS.length)
 
-let frozenStars: FrozenStar[] | null = null
 let pauseOffset = 0
 let frozenClock: number | null = null
+let homesReady = false
+/** Reflection columns across the plate, and the mirrored spectrum bands feeding them. */
+const REFL_COLS = 112
+const REFL_BANDS = REFL_COLS / 2
+/** How far reflection dots pull toward their column's centre line. */
+const REFL_COLUMN_SNAP = 0.7
+/** Column length when silent, as a share of the full reflection. */
+const REFL_REST = 0.14
+/** Mouse parallax travel at full depth, as a share of the shorter viewport side. */
+const PARALLAX = 0.014
+
+const bandLevel = new Float32Array(REFL_BANDS)
+const columnLevel = new Float32Array(REFL_COLS)
+let columnsAt = 0
+
+const pointer = { x: 0, y: 0, tx: 0, ty: 0 }
+let pointerAt = 0
+if (typeof window !== 'undefined') {
+  window.addEventListener(
+    'pointermove',
+    (e) => {
+      pointer.tx = (e.clientX / Math.max(1, window.innerWidth)) * 2 - 1
+      pointer.ty = (e.clientY / Math.max(1, window.innerHeight)) * 2 - 1
+    },
+    { passive: true },
+  )
+}
+
+const drawn: SkyStar[] = []
+let drawnN = 0
 
 function skyTime(real: number, active: boolean) {
   if (active) {
@@ -37,61 +85,6 @@ function skyTime(real: number, active: boolean) {
     frozenClock = null
   }
   return real - pauseOffset
-}
-
-function captureFreeze(clock: number) {
-  const drift = (clock * 0.0028) % 1
-  const lift = getSkyTravel() * FLY_SKY_LIFT
-  const rows = STARS.map((star, starIndex) => ({
-    starIndex,
-    nx: (star.x + drift) % 1,
-    ny: star.y + lift,
-  }))
-  rows.sort((a, b) => a.nx - b.nx || a.ny - b.ny)
-  frozenStars = rows
-}
-
-function spacedLineXs(rows: FrozenStar[], w: number, unit: number) {
-  const n = rows.length
-  const xs = rows.map((row) => row.nx)
-  const rad = rows.map((row) => {
-    const star = STARS[row.starIndex]
-    return Math.max(0.85 * unit, (star?.r ?? 1) * unit) / w
-  })
-  const pad = 1.35
-  const extra = 2 / w
-  const gap = (i: number, j: number) => ((rad[i] ?? 0) + (rad[j] ?? 0)) * pad + extra
-  const left = 0.016
-  const right = 0.984
-
-  for (let i = 1; i < n; i++) {
-    const minX = (xs[i - 1] ?? 0) + gap(i - 1, i)
-    xs[i] = Math.max(xs[i] ?? 0, minX)
-  }
-  const last = n - 1
-  xs[last] = Math.min(xs[last] ?? 1, right - (rad[last] ?? 0))
-  for (let i = n - 2; i >= 0; i--) {
-    const maxX = (xs[i + 1] ?? 1) - gap(i, i + 1)
-    xs[i] = Math.min(xs[i] ?? 0, maxX)
-  }
-  xs[0] = Math.max(xs[0] ?? 0, left + (rad[0] ?? 0))
-  for (let i = 1; i < n; i++) {
-    xs[i] = Math.max(xs[i] ?? 0, (xs[i - 1] ?? 0) + gap(i - 1, i), left + (rad[i] ?? 0))
-  }
-
-  const first = xs[0] ?? left
-  const end = xs[last] ?? right
-  const overflow = end + (rad[last] ?? 0) - right
-  if (overflow > 0) {
-    const span = end - first
-    const fit = right - left - (rad[0] ?? 0) - (rad[last] ?? 0)
-    if (span > 0 && fit > 0) {
-      const s = Math.min(1, fit / span)
-      const origin = left + (rad[0] ?? 0)
-      for (let i = 0; i < n; i++) xs[i] = origin + ((xs[i] ?? 0) - first) * s
-    }
-  }
-  return xs
 }
 
 function fract(v: number) {
@@ -106,22 +99,6 @@ function mix(a: number, b: number, t: number) {
   return a + (b - a) * t
 }
 
-function valueNoise(x: number) {
-  const i = Math.floor(x)
-  const f = x - i
-  const u = f * f * (3 - 2 * f)
-  return mix(hash(i), hash(i + 1), u) * 2 - 1
-}
-
-function field(u: number, seed: number) {
-  return (
-    valueNoise(u * 18.5 + seed) * 0.26 +
-    valueNoise(u * 41.0 + seed * 2.2) * 0.34 +
-    valueNoise(u * 88.0 + seed * 0.7) * 0.24 +
-    valueNoise(u * 165.0 + seed * 3.4) * 0.16
-  )
-}
-
 function speechEnv(t: number, seed: number) {
   const burst = 0.18 + 0.82 * Math.max(0, Math.sin(t * (4.5 + seed * 0.8) + seed * 3.1)) ** 1.15
   const phrase = 0.4 + 0.6 * Math.max(0.12, Math.sin(t * (1.15 + seed * 0.2) + seed * 2))
@@ -129,19 +106,316 @@ function speechEnv(t: number, seed: number) {
   return burst * phrase * pause
 }
 
-function voiceLift(u: number, t: number) {
-  const band = Math.floor(u * 13)
-  const region = speechEnv(t * 1.15 + hash(band) * 7, 0.18 + hash(band + 2) * 0.7)
+function voiceEnergy(t: number) {
   const e1 = speechEnv(t, 0.11)
   const e2 = speechEnv(t * 1.38 + 0.55, 0.52)
   const e3 = speechEnv(t * 0.9 + 1.4, 0.88)
-  let y = field(u, 1.12) * (0.28 + 0.72 * e1)
-  y += field(u, 5.4) * e2 * 0.75
-  y += field(u, 9.1) * e3 * 0.4
-  y *= 0.2 + 0.8 * region
-  y = Math.sign(y) * Math.abs(y) ** 0.68
-  y += (hash(u * 240 + Math.floor(t * 26)) * 2 - 1) * e2 * 0.14
-  return Math.max(-1, Math.min(1, y * 1.55))
+  return Math.min(1, e1 * 0.52 + e2 * 0.33 + e3 * 0.22)
+}
+
+/** Stand-in spectrum while the mic is unavailable: speech-like bursts, louder low bands. */
+function syntheticBands(time: number, out: Float32Array) {
+  const n = out.length
+  const body = voiceEnergy(time)
+  for (let k = 0; k < n; k++) {
+    const f = k / n
+    const formant = 0.55 + 0.45 * Math.sin(time * (2.3 + f * 4.1) + k * 1.7) ** 2
+    const lag = voiceEnergy(time - f * 0.12 + k * 0.013)
+    out[k] = Math.min(1, (0.6 * body + 0.4 * lag) * formant * (1.05 - 0.55 * f))
+  }
+}
+
+/**
+ * Depth of each reflection column, 0 at the waterline. Columns mirror the
+ * spectrum around the centre, so the voice's low end drops under the tallest towers.
+ */
+function updateColumns(time: number, amp: number) {
+  if (!readBands(bandLevel)) syntheticBands(time, bandLevel)
+  const dt = columnsAt === 0 ? 1 / 60 : Math.min(0.05, Math.max(0, time - columnsAt))
+  columnsAt = time
+  const half = REFL_COLS / 2
+  for (let c = 0; c < REFL_COLS; c++) {
+    const band = Math.min(REFL_BANDS - 1, Math.floor((Math.abs(c + 0.5 - half) / half) * REFL_BANDS))
+    const target = amp * (bandLevel[band] ?? 0)
+    const cur = columnLevel[c] ?? 0
+    const rate = target > cur ? 22 : 3.2
+    columnLevel[c] = cur + (target - cur) * (1 - Math.exp(-dt * rate))
+  }
+}
+
+function resetColumns() {
+  columnLevel.fill(0)
+  columnsAt = 0
+}
+
+/** Pointer position in −1…1, eased so the parallax glides. */
+function tickPointer(time: number) {
+  const dt = pointerAt === 0 ? 1 / 60 : Math.min(0.05, Math.max(0, time - pointerAt))
+  pointerAt = time
+  const k = 1 - Math.exp(-dt * 4.5)
+  pointer.x += (pointer.tx - pointer.x) * k
+  pointer.y += (pointer.ty - pointer.y) * k
+}
+
+/** Idle position. The dismiss target is this same function at the frozen clock. */
+function restNorm(star: Star, clock: number, travel: number) {
+  const drift = (clock * 0.0028) % 1
+  return {
+    nx: (star.x + drift) % 1,
+    ny: star.y + travel * FLY_SKY_LIFT,
+  }
+}
+
+function starVis(star: Star, clock: number, starOpacity: number) {
+  const twinkle = 0.88 + 0.12 * (0.5 + 0.5 * Math.sin(clock * star.tw + star.ph))
+  const vis = Math.max(starOpacity, star.glint ? 0.2 : 0) * star.b * twinkle
+  return { vis, gain: star.glint ? 1.9 : 1.05 }
+}
+
+function starAlpha(vis: number, gain: number, ny: number) {
+  if (vis < 0.03) return 0
+  const fade = 1 - Math.min(1, Math.max(0, (ny - STAR_FADE_START) / (STAR_FADE_END - STAR_FADE_START)))
+  return vis * fade * gain
+}
+
+function starRadius(star: Star, unit: number) {
+  return Math.max(0.85 * unit, star.r * unit)
+}
+
+function smoothstep(t: number) {
+  const u = t < 0 ? 0 : t > 1 ? 1 : t
+  return u * u * (3 - 2 * u)
+}
+
+function skylineFrame(w: number, h: number) {
+  const inset = 0.035
+  const availW = w * (1 - inset * 2)
+  const availH = h * (1 - inset * 2)
+  let dw = availW
+  let dh = dw / SKYLINE_ASPECT
+  if (dh > availH) {
+    dh = availH
+    dw = dh * SKYLINE_ASPECT
+  }
+  const ox = (w - dw) / 2
+  const oy = (h - dh) / 2
+  return { ox, oy, dw, dh, waterY: oy + SKYLINE_WATER * dh, px: dw / 1024 }
+}
+
+type Placement = ReturnType<typeof skylineFrame>
+
+const PROX_COLS = 48
+
+/** Coarse 0–1 map of how close each part of the screen is to the skyline. */
+function skylineProximity(place: Placement, w: number, h: number) {
+  const cols = PROX_COLS
+  const rows = Math.max(2, Math.round((cols * h) / Math.max(1, w)))
+  let grid = new Float32Array(cols * rows)
+  const g = SKYLINE_GRAINS
+  for (let k = 0; k < g.n; k++) {
+    const sx = place.ox + (g.x[k] ?? 0) * place.dw
+    const sy = place.oy + (g.y[k] ?? 0) * place.dh
+    const c = Math.min(cols - 1, Math.max(0, Math.floor((sx / w) * cols)))
+    const r = Math.min(rows - 1, Math.max(0, Math.floor((sy / h) * rows)))
+    grid[r * cols + c] = (grid[r * cols + c] ?? 0) + 1
+  }
+  // A few box passes turn the occupancy into a soft halo around the city.
+  for (let pass = 0; pass < 4; pass++) {
+    const next = new Float32Array(cols * rows)
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        let sum = 0
+        let n = 0
+        for (let dr = -1; dr <= 1; dr++) {
+          const rr = r + dr
+          if (rr < 0 || rr >= rows) continue
+          for (let dc = -1; dc <= 1; dc++) {
+            const cc = c + dc
+            if (cc < 0 || cc >= cols) continue
+            sum += grid[rr * cols + cc] ?? 0
+            n++
+          }
+        }
+        next[r * cols + c] = sum / n
+      }
+    }
+    grid = next
+  }
+  let max = 0
+  for (const v of grid) if (v > max) max = v
+  if (max > 0) for (let k = 0; k < grid.length; k++) grid[k] = (grid[k] ?? 0) / max
+  return (nx: number, ny: number) => {
+    const c = Math.min(cols - 1, Math.max(0, Math.floor(nx * cols)))
+    const r = Math.min(rows - 1, Math.max(0, Math.floor(ny * rows)))
+    return grid[r * cols + c] ?? 0
+  }
+}
+
+/**
+ * Draft most visible stars into the skyline. Stars near the city are the
+ * likeliest to go, so the sky thins gradually instead of along a cut line.
+ * Drafted stars are matched to targets column by column, then top to bottom,
+ * so every star flies to a part of the city near where it was.
+ */
+function captureAssignments(clock: number, w: number, h: number, travel: number) {
+  const place = skylineFrame(w, h)
+  const near = skylineProximity(place, w, h)
+  const pool: { i: number; key: number }[] = []
+
+  for (let i = 0; i < STARS.length; i++) {
+    const star = STARS[i]
+    if (!star) continue
+    const rest = restNorm(star, clock, travel)
+    homeNx[i] = rest.nx
+    homeNy[i] = rest.ny
+    roleOf[i] = ROLE_IDLE
+    if (rest.ny < 0 || rest.ny >= STAR_FADE_END) continue
+    roleOf[i] = ROLE_SKY
+    const p = near(rest.nx, rest.ny)
+    // Weighted sampling without replacement: larger weight, larger key.
+    const weight = 0.2 + 14 * p * p
+    pool.push({ i, key: Math.log(Math.max(1e-6, hash(i * 1.618 + 0.37))) / weight })
+  }
+
+  pool.sort((a, b) => b.key - a.key)
+  const g = SKYLINE_GRAINS
+  const n = Math.min(g.n, Math.round(pool.length * DRAFT_SHARE))
+  const movers = pool.slice(0, n).map((p) => p.i)
+  const targets = Array.from({ length: n }, (_, k) => k)
+  movers.sort((a, b) => (homeNx[a] ?? 0) - (homeNx[b] ?? 0))
+  targets.sort((a, b) => (g.x[a] ?? 0) - (g.x[b] ?? 0))
+
+  const strips = Math.max(1, Math.round(Math.sqrt(n / 3)))
+  for (let s = 0; s < strips; s++) {
+    const lo = Math.floor((s * n) / strips)
+    const hi = Math.floor(((s + 1) * n) / strips)
+    const ms = movers.slice(lo, hi).sort((a, b) => (homeNy[a] ?? 0) - (homeNy[b] ?? 0))
+    const ts = targets.slice(lo, hi).sort((a, b) => (g.y[a] ?? 0) - (g.y[b] ?? 0))
+    for (let k = 0; k < ms.length; k++) {
+      const i = ms[k] ?? 0
+      const slot = ts[k] ?? 0
+      slotOf[i] = slot
+      roleOf[i] = (g.y[slot] ?? 0) > SKYLINE_WATER ? ROLE_REFL : ROLE_CITY
+    }
+  }
+
+  homesReady = true
+}
+
+/** Parallax depth of a sky star: far stars barely move, near ones drift more. */
+function skyDepth(i: number) {
+  return 0.15 + 0.35 * hash(i * 5.13 + 0.9)
+}
+
+/** Per-star progress through the gather, staggered so the city condenses rather than snaps. */
+function flight(i: number, blend: number) {
+  const delay = GATHER_STAGGER * hash(i * 0.731 + 2.1)
+  return smoothstep((blend - delay) / (1 - delay))
+}
+
+function beginStars() {
+  drawnN = 0
+}
+
+function emit(x: number, y: number, r: number, a: number, glint: boolean, unit: number) {
+  if (a < 0.04 || y < -8 * unit) return
+  let s = drawn[drawnN]
+  if (!s) {
+    s = { x, y, r, a, glint }
+    drawn[drawnN] = s
+  } else {
+    s.x = x
+    s.y = y
+    s.r = r
+    s.a = a
+    s.glint = glint
+  }
+  drawnN++
+}
+
+function finishStars() {
+  drawn.length = drawnN
+  return drawn
+}
+
+function paintIdle(clock: number, travel: number, w: number, h: number, unit: number, starOpacity: number) {
+  beginStars()
+  for (const star of STARS) {
+    const rest = restNorm(star, clock, travel)
+    const { vis, gain } = starVis(star, clock, starOpacity)
+    emit(rest.nx * w, rest.ny * h, starRadius(star, unit), starAlpha(vis, gain, rest.ny), star.glint, unit)
+  }
+  return finishStars()
+}
+
+function paintGather(
+  clock: number,
+  time: number,
+  w: number,
+  h: number,
+  unit: number,
+  starOpacity: number,
+  blend: number,
+) {
+  const place = skylineFrame(w, h)
+  const g = SKYLINE_GRAINS
+  // The city stays legible when the sky is too bright for the idle stars.
+  const lum = 0.45 + 0.55 * starOpacity
+  const skyDim = 1 - 0.3 * blend
+  const sway = Math.min(w, h) * PARALLAX * blend
+  const panX = -pointer.x * sway
+  const panY = -pointer.y * sway * 0.5
+  beginStars()
+  for (let i = 0; i < STARS.length; i++) {
+    const star = STARS[i]
+    if (!star) continue
+    const { vis, gain } = starVis(star, clock, starOpacity)
+    const hx = (homeNx[i] ?? 0) * w
+    const hy = (homeNy[i] ?? 0) * h
+    const homeA = starAlpha(vis, gain, homeNy[i] ?? 0)
+    const r = starRadius(star, unit)
+    const kind = roleOf[i] ?? ROLE_IDLE
+
+    if (kind === ROLE_CITY || kind === ROLE_REFL) {
+      const slot = slotOf[i] ?? 0
+      const gx = g.x[slot] ?? 0
+      const gy = g.y[slot] ?? SKYLINE_WATER
+      const gb = g.b[slot] ?? 0
+      let tx = place.ox + gx * place.dw
+      let ty: number
+      let a = lum * (0.12 + 0.88 * gb ** 1.35)
+      if (kind === ROLE_CITY) {
+        ty = place.oy + gy * place.dh
+        a *= 0.84 + 0.16 * Math.sin(time * (0.6 + star.tw) + star.ph)
+      } else {
+        const col = Math.min(REFL_COLS - 1, Math.floor(gx * REFL_COLS))
+        const level = columnLevel[col] ?? 0
+        const colX = place.ox + ((col + 0.5) / REFL_COLS) * place.dw
+        tx = mix(tx, colX, REFL_COLUMN_SNAP) + Math.sin(time * 1.6 + gy * 160 + star.ph) * place.px * 0.4
+        // Every dot stays lit; the column stretches and gathers with the voice.
+        const stretch = REFL_REST + (1 - REFL_REST) * level
+        ty = place.waterY + (gy - SKYLINE_WATER) * place.dh * stretch
+        // Compressed columns stack dots, so ease brightness down to keep them from blowing out.
+        a *= (0.5 + 0.5 * stretch) * (0.75 + 0.25 * Math.sin(time * (1.8 + star.tw) + gy * 240) ** 2)
+      }
+      const settledR = Math.max(0.7 * unit, place.px * (0.55 + 1.6 * gb * gb))
+      const t = flight(i, blend)
+      // A slight bow so the stars swirl in rather than slide on rails.
+      const bow = Math.sin(Math.PI * t) * 0.16 * (hash(i * 3.7 + 0.2) - 0.5)
+      const x = mix(hx, tx, t) - (ty - hy) * bow
+      const y = mix(hy, ty, t) + (tx - hx) * bow
+      const glint = t > 0.6 ? kind === ROLE_CITY && gb > 0.8 : star.glint
+      // The skyline is the mid layer; stars still in flight carry their sky depth.
+      const depthK = mix(skyDepth(i), 0.75, t)
+      emit(x + panX * depthK, y + panY * depthK, mix(r, settledR, t), mix(homeA, Math.min(0.95, a), t), glint, unit)
+    } else if (kind === ROLE_SKY) {
+      const depthK = skyDepth(i)
+      emit(hx + panX * depthK, hy + panY * depthK, r, homeA * skyDim, star.glint, unit)
+    } else {
+      emit(hx, hy, r, homeA, star.glint, unit)
+    }
+  }
+  return finishStars()
 }
 
 function drawStar(
@@ -265,8 +539,8 @@ export function computeSky(w: number, h: number, time = performance.now() / 1000
   const glow = palette.skyGlow
   const unit = Math.max(1, w / 1920)
 
-  const lift = getSkyTravel()
-  const extra = lift * h * FLY_SKY_LIFT
+  const travel = getSkyTravel()
+  const extra = travel * h * FLY_SKY_LIFT
 
   const frame: SkyFrame = {
     w,
@@ -301,58 +575,25 @@ export function computeSky(w: number, h: number, time = performance.now() / 1000
     starRgb: hexRgb(mixHex('#e8f0f8', palette.sunColor, 0.18)),
     stars: [],
   }
-  const stars = frame.stars
-
   tickVoice()
   const voice = getVoice()
   const active = voice.mode !== 'idle'
   const clock = skyTime(time, active)
-  if (active && !frozenStars) captureFreeze(clock)
-  if (!active) frozenStars = null
   const blend = voiceBlend()
   const amp = voiceAmp()
+  if (!active) {
+    homesReady = false
+    resetColumns()
+  } else if (!homesReady || blend <= 0.001) {
+    captureAssignments(clock, w, h, travel)
+  }
 
-  const drift = (clock * 0.0028) % 1
-
-  if (frozenStars && blend > 0.001) {
-    const center = h * 0.44
-    const waveH = h * 0.18
-    const lineXs = spacedLineXs(frozenStars, w, unit)
-
-    frozenStars.forEach((frozen, i) => {
-      const star = STARS[frozen.starIndex]
-      if (!star) return
-      const twinkle = 0.88 + 0.12 * (0.5 + 0.5 * Math.sin(clock * star.tw + star.ph))
-      const liveVis = Math.max(palette.starOpacity, star.glint ? 0.2 : 0) * star.b * twinkle
-      const liveFade = 1 - Math.min(1, Math.max(0, (frozen.ny - 0.68) / 0.14))
-      const liveA = liveVis * liveFade * (star.glint ? 1.9 : 1.05)
-      const linedA = Math.max(liveA, (0.42 + star.b * 0.5) * (star.glint ? 1.25 : 1))
-      const a = mix(liveA, linedA, blend)
-      const homeY = frozen.ny * h
-      const u = lineXs[i] ?? frozen.nx
-      const linedY = center + voiceLift(u, time) * amp * waveH
-      stars.push({
-        x: mix(frozen.nx, u, blend) * w,
-        y: mix(homeY, linedY, blend),
-        r: Math.max(0.85 * unit, star.r * unit),
-        a,
-        glint: star.glint,
-      })
-    })
+  if (homesReady && blend > 0.001) {
+    updateColumns(time, amp)
+    tickPointer(time)
+    frame.stars = paintGather(clock, time, w, h, unit, palette.starOpacity, blend)
   } else {
-    for (const star of STARS) {
-      const twinkle = 0.88 + 0.12 * (0.5 + 0.5 * Math.sin(clock * star.tw + star.ph))
-      const vis = Math.max(palette.starOpacity, star.glint ? 0.2 : 0) * star.b * twinkle
-      if (vis < 0.03) continue
-      const ny = star.y + lift * FLY_SKY_LIFT
-      const x = ((star.x + drift) % 1) * w
-      const y = ny * h
-      if (y < -8 * unit) continue
-      const fade = 1 - Math.min(1, Math.max(0, (ny - 0.68) / 0.14))
-      const a = vis * fade * (star.glint ? 1.9 : 1.05)
-      const r = Math.max(0.85 * unit, star.r * unit)
-      stars.push({ x, y, r, a, glint: star.glint })
-    }
+    frame.stars = paintIdle(clock, travel, w, h, unit, palette.starOpacity)
   }
 
   latest = frame
